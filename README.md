@@ -42,10 +42,23 @@ uv run now poll --loop 120            # keep polling every 2 minutes
 - check or review-decision changes on your own open PRs (`github.ci_status`, `github.pr_status`);
   the first sighting of a PR is recorded silently, only later changes become noise
 
-`now poll slack` needs `SLACK_TOKEN` (a user token; for an `xoxc-` session token also
-set `SLACK_COOKIE` to the `d` cookie value). It captures mentions and thread replies that
-mention you via search, and new DM or group-DM messages from others (`slack.message`,
-`slack.thread`). DM history starts from the last 24 hours on the first poll.
+`now poll slack` does not talk to Slack directly. It calls a Slack-capable MCP server
+through `h-mcp`, so whatever is registered there (slack, slack-no-dms, glean, runlayer,
+runlayer-plugin) is the Slack connection. Setup on a machine that has one:
+
+```sh
+h-mcp add slack --agent claude      # or --config FILE; register the exact server name
+h-mcp discover slack                # save its tool catalog
+NOW_SLACK_MCP=slack now poll slack
+```
+
+The poller picks the first search tool the server exposes, in this order:
+`slack_search_public_and_private`, `slack_search_public`, `conversations_search_messages`,
+`search_messages`, `search`. Override with `NOW_SLACK_TOOL` and `NOW_SLACK_TOOL_ARG`
+(the argument that carries the query). `NOW_SLACK_QUERY` defaults to `to:me after:yesterday`;
+set it to your handle to catch mentions, or add `app:slack` for glean. Structured results and
+JSON text blocks become one noise item per message (`slack.message`, `slack.thread`). Prose
+results become one item per paragraph, keyed by content.
 
 Re-polled items are deduplicated by key, so polling is safe to repeat. Poller cursors
 live in `poll-state.json` next to the event log.

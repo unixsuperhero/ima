@@ -1,17 +1,15 @@
 """Funnel pollers. Each turns an external inbox into noise items.
 
-GitHub uses the `gh` CLI (already authenticated). Slack uses the Web API with
-SLACK_TOKEN (and SLACK_COOKIE for xoxc session tokens). Per-source cursors and
-fingerprints live in poll-state.json so only changes become noise.
+GitHub uses the `gh` CLI (already authenticated). Slack goes through a Slack-capable
+MCP server registered in h-mcp (NOW_SLACK_MCP: slack, slack-no-dms, glean, runlayer...).
+Per-source fingerprints live in poll-state.json so only changes become noise.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
-import time
-import urllib.parse
-import urllib.request
 from collections import Counter
 
 from .store import Store
@@ -91,49 +89,99 @@ def poll_github(store: Store, state: State, gh=gh, gh_pr=gh_pr) -> int:
     return added
 
 
-# -- slack ------------------------------------------------------------------
+# -- slack, through a registered MCP server via h-mcp ------------------------
 
-def slack_api(method: str, **params: object) -> dict:
-    token = os.environ.get("SLACK_TOKEN")
-    if not token:
-        raise RuntimeError("SLACK_TOKEN is not set")
-    url = f"https://slack.com/api/{method}?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    cookie = os.environ.get("SLACK_COOKIE")
-    if cookie:
-        req.add_header("Cookie", f"d={cookie}")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read())
-    if not data.get("ok"):
-        raise RuntimeError(f"slack {method}: {data.get('error')}")
-    return data
+SLACK_MCP_TOOLS = [  # (tool name, query argument); the first one the server exposes wins
+    ("slack_search_public_and_private", "query"),   # Slack's own MCP server, e.g. behind runlayer
+    ("slack_search_public", "query"),
+    ("conversations_search_messages", "search_query"),  # slack-mcp-server
+    ("search_messages", "query"),
+    ("search", "query"),                              # glean
+]
 
 
-def poll_slack(store: Store, state: State, api=slack_api) -> int:
+def mcp_tools(server: str) -> list[str]:
+    proc = subprocess.run(["h-mcp", "tools", server, "--json"], capture_output=True, text=True)
+    if proc.returncode:
+        raise RuntimeError(f"h-mcp tools {server}: {proc.stderr.strip() or proc.stdout.strip()}")
+    return [t["name"] for t in json.loads(proc.stdout)]
+
+
+def mcp_call(server: str, tool: str, args: dict) -> dict:
+    proc = subprocess.run(["h-mcp", "call", server, tool, "--args-file", "-"],
+                          input=json.dumps(args), capture_output=True, text=True)
+    if proc.returncode:
+        raise RuntimeError(f"h-mcp call {server} {tool}: {proc.stderr.strip() or proc.stdout.strip()[:300]}")
+    return json.loads(proc.stdout)
+
+
+def _message_list(node: object) -> list[dict] | None:
+    """Depth-first: the first list of dicts that look like messages (have a text field)."""
+    if isinstance(node, list) and node and all(isinstance(x, dict) for x in node):
+        if any("text" in x for x in node):
+            return node
+    if isinstance(node, dict):
+        for v in node.values():
+            found = _message_list(v)
+            if found:
+                return found
+    if isinstance(node, list):
+        for v in node:
+            found = _message_list(v)
+            if found:
+                return found
+    return None
+
+
+def slack_messages(result: dict) -> list[dict] | None:
+    """Structured messages from an MCP result, or None when the tool returned prose."""
+    if "structuredContent" in result:
+        return _message_list(result["structuredContent"]) or []
+    texts = [c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"]
+    if len(texts) == 1:
+        try:
+            return _message_list(json.loads(texts[0])) or []
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def poll_slack(store: Store, state: State, tools=mcp_tools, call=mcp_call) -> int:
+    server = os.environ.get("NOW_SLACK_MCP", "slack")
+    query = os.environ.get("NOW_SLACK_QUERY", "to:me after:yesterday")
+    tool = os.environ.get("NOW_SLACK_TOOL")
+    arg = os.environ.get("NOW_SLACK_TOOL_ARG", "query")
+    if not tool:
+        available = set(tools(server))
+        tool, arg = next(((t, a) for t, a in SLACK_MCP_TOOLS if t in available),
+                         (None, None))
+        if not tool:
+            raise RuntimeError(f"{server} exposes none of {[t for t, _ in SLACK_MCP_TOOLS]}; "
+                               "set NOW_SLACK_TOOL and NOW_SLACK_TOOL_ARG")
+    result = call(server, tool, {arg: query})
     added = 0
-    me = api("auth.test")["user_id"]
-
-    for m in api("search.messages", query=f"<@{me}>", sort="timestamp", sort_dir="desc", count=50)["messages"]["matches"]:
-        ch = m.get("channel", {})
-        source = "slack.thread" if m.get("thread_ts") and m.get("thread_ts") != m.get("ts") else "slack.message"
-        who = m.get("username") or m.get("user", "?")
-        if store.capture(f"#{ch.get('name', ch.get('id'))} {who}: {m.get('text', '')}", source=source,
-                         ref=m.get("permalink"), key=f"slack:{ch.get('id')}:{m['ts']}"):
+    messages = slack_messages(result)
+    if messages is None:  # prose: one noise item per paragraph, keyed by content
+        for c in result.get("content", []):
+            for chunk in filter(None, (x.strip() for x in c.get("text", "").split("\n\n"))):
+                digest = hashlib.sha256(chunk.encode()).hexdigest()[:16]
+                if store.capture(chunk, source="slack.message", key=f"slack:{server}:{digest}"):
+                    added += 1
+        return added
+    for m in messages:
+        ch = m.get("channel") or m.get("channel_id") or ""
+        if isinstance(ch, dict):
+            ch_id, ch_name = ch.get("id", ""), ch.get("name") or ch.get("id", "")
+        else:
+            ch_id = ch_name = str(ch)
+        ts = str(m.get("ts") or m.get("timestamp") or "")
+        key = m.get("permalink") or f"{ch_id}:{ts}" or hashlib.sha256(json.dumps(m, sort_keys=True).encode()).hexdigest()[:16]
+        thread = m.get("thread_ts")
+        source = "slack.thread" if thread and str(thread) != ts else "slack.message"
+        who = m.get("username") or m.get("user_name") or m.get("user") or "?"
+        if store.capture(f"#{ch_name} {who}: {m.get('text', '')}", source=source,
+                         ref=m.get("permalink"), key=f"slack:{key}"):
             added += 1
-
-    oldest = state.data.setdefault("slack_dm_oldest", {})
-    for conv in api("users.conversations", types="im,mpim", exclude_archived="true", limit=200)["channels"]:
-        cid = conv["id"]
-        since = oldest.get(cid, str(time.time() - 86400))
-        hist = api("conversations.history", channel=cid, oldest=since, limit=50)["messages"]
-        for m in hist:
-            if m.get("user") == me or m.get("subtype"):
-                continue
-            if store.capture(f"DM {m.get('user', '?')}: {m.get('text', '')}", source="slack.message",
-                             ref=None, key=f"slack:{cid}:{m['ts']}"):
-                added += 1
-        if hist:
-            oldest[cid] = max(m["ts"] for m in hist)
     return added
 
 

@@ -29,7 +29,8 @@ A task made by `extract` carries `from: noiseId`; the noise carries `task: taskI
 
 Noise arrives from these sources and is extracted into tasks. Each noise item
 keeps `source`, `ref`, and a dedup `key` so the resulting task links back to
-where it came from and re-polling never duplicates. Pollers live in `now/poll.py`;
+where it came from and re-polling never duplicates. Pollers live in `now/poll.py`. Slack is reached only through an MCP server
+registered in h-mcp, never a Slack token held by this app;
 `clipboard` and `pane` are just `capture -s` values with no automation yet.
 
 ```js

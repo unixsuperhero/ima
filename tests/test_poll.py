@@ -1,5 +1,8 @@
+import json
+import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from now.poll import State, poll_github, poll_slack, pr_fingerprint
@@ -64,33 +67,57 @@ class GithubPollTest(unittest.TestCase):
         self.assertEqual(State(self.store).data["github_pr"][PR_URL], pr_fingerprint(pr3))
 
 
+STRUCTURED = {"structuredContent": {"ok": True, "messages": {"matches": [
+    {"ts": "1.0", "text": "hey look", "channel": {"id": "C1", "name": "eng"}, "username": "bob",
+     "permalink": "https://s/p/1"},
+    {"ts": "2.0", "thread_ts": "1.5", "text": "in thread", "channel": {"id": "C1", "name": "eng"},
+     "username": "ann", "permalink": "https://s/p/2"}]}}}
+
+JSON_TEXT = {"content": [{"type": "text", "text": json.dumps(
+    {"results": [{"ts": "3.0", "text": "ping", "channel": "D1", "user": "UBOB"}]})}]}
+
+PROSE = {"content": [{"type": "text", "text": "Found 2 messages:\n\n#eng bob: hey look\n\n#eng ann: in thread"}]}
+
+
 class SlackPollTest(unittest.TestCase):
-    def test_mentions_and_dms(self):
-        calls = []
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name))
+        self.state = State(self.store)
+        self.calls = []
 
-        def api(method, **params):
-            calls.append(method)
-            if method == "auth.test":
-                return {"user_id": "UME"}
-            if method == "search.messages":
-                return {"messages": {"matches": [
-                    {"ts": "1.0", "text": "hey <@UME> look", "channel": {"id": "C1", "name": "eng"},
-                     "username": "bob", "permalink": "https://s/p/1"},
-                    {"ts": "2.0", "thread_ts": "1.5", "text": "in thread", "channel": {"id": "C1", "name": "eng"},
-                     "username": "ann", "permalink": "https://s/p/2"}]}}
-            if method == "users.conversations":
-                return {"channels": [{"id": "D1"}]}
-            if method == "conversations.history":
-                return {"messages": [{"ts": "3.0", "user": "UBOB", "text": "ping"},
-                                     {"ts": "3.5", "user": "UME", "text": "my reply"},
-                                     {"ts": "3.6", "user": "UBOB", "subtype": "channel_join", "text": ""}]}
-            raise AssertionError(method)
+    def tearDown(self):
+        self.tmp.cleanup()
 
-        with tempfile.TemporaryDirectory() as tmp:
-            store = Store(Path(tmp))
-            state = State(store)
-            self.assertEqual(poll_slack(store, state, api=api), 3)
-            sources = sorted(n.source for n in store.open_noise())
-            self.assertEqual(sources, ["slack.message", "slack.message", "slack.thread"])
-            self.assertEqual(state.data["slack_dm_oldest"]["D1"], "3.6")
-            self.assertEqual(poll_slack(store, state, api=api), 0)
+    def run_poll(self, tool_names, result, env=None):
+        def call(server, tool, args):
+            self.calls.append((server, tool, args))
+            return result
+        with unittest.mock.patch.dict(os.environ, env or {}, clear=False):
+            for k in ("NOW_SLACK_MCP", "NOW_SLACK_TOOL", "NOW_SLACK_QUERY", "NOW_SLACK_TOOL_ARG"):
+                if not (env and k in env):
+                    os.environ.pop(k, None)
+            return poll_slack(self.store, self.state, tools=lambda s: tool_names, call=call)
+
+    def test_picks_first_known_tool_and_parses_structured(self):
+        added = self.run_poll(["slack_send_message", "slack_search_public_and_private"], STRUCTURED)
+        self.assertEqual(added, 2)
+        self.assertEqual(self.calls, [("slack", "slack_search_public_and_private", {"query": "to:me after:yesterday"})])
+        self.assertEqual(sorted(n.source for n in self.store.open_noise()), ["slack.message", "slack.thread"])
+        self.assertEqual(self.store.open_noise()[0].ref, "https://s/p/1")
+        self.assertEqual(self.run_poll(["slack_search_public_and_private"], STRUCTURED), 0)
+
+    def test_server_tool_and_query_from_env(self):
+        env = {"NOW_SLACK_MCP": "slack-no-dms", "NOW_SLACK_TOOL": "conversations_search_messages",
+               "NOW_SLACK_TOOL_ARG": "search_query", "NOW_SLACK_QUERY": "@josh"}
+        self.assertEqual(self.run_poll([], JSON_TEXT, env), 1)
+        self.assertEqual(self.calls, [("slack-no-dms", "conversations_search_messages", {"search_query": "@josh"})])
+        self.assertIn("#D1 UBOB: ping", self.store.open_noise()[0].body)
+
+    def test_prose_result_becomes_one_item_per_paragraph(self):
+        self.assertEqual(self.run_poll(["search"], PROSE), 3)
+        self.assertEqual(self.run_poll(["search"], PROSE), 0)
+
+    def test_no_known_tool_is_an_error(self):
+        with self.assertRaises(RuntimeError):
+            self.run_poll(["slack_send_message"], STRUCTURED)
