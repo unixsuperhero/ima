@@ -5,6 +5,10 @@ Events (one JSON object per line):
   {"at": iso, "type": "task.activate", "id": str}
   {"at": iso, "type": "task.unset",    "id": str, "reason": "idle"|"overrun"|"manual"}
   {"at": iso, "type": "task.done",     "id": str}
+  {"at": iso, "type": "noise.add",     "id": str, "key": str, "source": str, "ref": str|None, "body": str}
+  {"at": iso, "type": "noise.done",    "id": str, "task": str|None}
+
+Noise is raw input from a funnel source. `key` dedups re-polled items.
 """
 from __future__ import annotations
 
@@ -38,6 +42,19 @@ class Task:
     state: str = "open"  # open | active | done
     activated_at: str | None = None
     done_at: str | None = None
+    from_noise: str | None = None
+
+
+@dataclass
+class Noise:
+    id: str
+    key: str
+    source: str
+    ref: str | None
+    body: str
+    created_at: str
+    state: str = "open"  # open | done
+    task: str | None = None
 
 
 class Store:
@@ -66,7 +83,8 @@ class Store:
         for e in self.events():
             t = e["type"]
             if t == "task.add":
-                tasks[e["id"]] = Task(e["id"], e["title"], e.get("parent"), e["at"])
+                tasks[e["id"]] = Task(e["id"], e["title"], e.get("parent"), e["at"],
+                                      from_noise=e.get("from"))
                 continue
             task = tasks.get(e["id"])
             if task is None:
@@ -109,11 +127,45 @@ class Store:
         today = datetime.now(timezone.utc).date().isoformat()
         return sum(1 for t in self.tasks().values() if t.done_at and t.done_at.startswith(today))
 
+    def noise(self) -> dict[str, Noise]:
+        items: dict[str, Noise] = {}
+        for e in self.events():
+            if e["type"] == "noise.add":
+                items[e["id"]] = Noise(e["id"], e["key"], e["source"], e.get("ref"), e["body"], e["at"])
+            elif e["type"] == "noise.done" and e["id"] in items:
+                items[e["id"]].state = "done"
+                items[e["id"]].task = e.get("task")
+        return items
+
+    def open_noise(self) -> list[Noise]:
+        return sorted((n for n in self.noise().values() if n.state == "open"),
+                      key=lambda n: n.created_at)
+
     # -- commands ---------------------------------------------------------
-    def add(self, title: str, parent: str | None = None) -> Task:
+    def add(self, title: str, parent: str | None = None, from_noise: str | None = None) -> Task:
         task_id = secrets.token_hex(4)
-        e = self.append({"type": "task.add", "id": task_id, "title": title, "parent": parent})
-        return Task(task_id, title, parent, e["at"])
+        e = self.append({"type": "task.add", "id": task_id, "title": title, "parent": parent,
+                         "from": from_noise})
+        return Task(task_id, title, parent, e["at"], from_noise=from_noise)
+
+    def capture(self, body: str, source: str = "cli", ref: str | None = None,
+                key: str | None = None) -> Noise | None:
+        """Append a noise item. Returns None if `key` was already captured."""
+        key = key or f"{source}:{secrets.token_hex(4)}"
+        if any(n.key == key for n in self.noise().values()):
+            return None
+        noise_id = secrets.token_hex(4)
+        e = self.append({"type": "noise.add", "id": noise_id, "key": key, "source": source,
+                         "ref": ref, "body": body})
+        return Noise(noise_id, key, source, ref, body, e["at"])
+
+    def extract(self, noise_id: str, title: str) -> Task:
+        task = self.add(title, from_noise=noise_id)
+        self.append({"type": "noise.done", "id": noise_id, "task": task.id})
+        return task
+
+    def drop(self, noise_id: str) -> None:
+        self.append({"type": "noise.done", "id": noise_id, "task": None})
 
     def activate(self, task_id: str) -> None:
         self.append({"type": "task.activate", "id": task_id})

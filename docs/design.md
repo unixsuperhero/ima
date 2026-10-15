@@ -4,7 +4,7 @@
 
 | Level | What lives here | Only verb | Built |
 | --- | --- | --- | --- |
-| Noise | raw captures from every funnel source | extract | no |
+| Noise | raw captures from every funnel source | extract | CLI: capture, noise, extract, drop, poll |
 | Items | tasks, to-knows, deferred motivations | pick | tasks only |
 | Now | the single active task and its children | finish | yes |
 | Review | done log, counts per day | read | count in picker header only |
@@ -21,13 +21,16 @@ motivation = { id, type:'motivation', meta:{ title, why, unlockAt, from: learnRu
 action     = { id, type:'action', meta:{ verb, taskId, at } }
 ```
 
-Today only `task` exists, stored as an append-only event log in
+Today `task` and `noise` exist, stored as an append-only event log in
 `events.jsonl`. State is derived by replaying the log. See `now/store.py`.
+A task made by `extract` carries `from: noiseId`; the noise carries `task: taskId`.
 
-## Funnel sources (planned)
+## Funnel sources
 
 Noise arrives from these sources and is extracted into tasks. Each noise item
-keeps `source` and `ref` so the resulting task links back to where it came from.
+keeps `source`, `ref`, and a dedup `key` so the resulting task links back to
+where it came from and re-polling never duplicates. Pollers live in `now/poll.py`;
+`clipboard` and `pane` are just `capture -s` values with no automation yet.
 
 ```js
 source = 'cli' | 'clipboard' | 'pane'
@@ -53,5 +56,5 @@ so editors and shells outside the TUI count as working.
 
 ## Not yet built
 
-Noise capture and extraction, learn-for-later runs, per-task theming,
-tuios activity integration, review screen.
+A Noise screen in the TUI (triage is CLI only), learn-for-later runs,
+per-task theming, tuios activity and pane capture, review screen.

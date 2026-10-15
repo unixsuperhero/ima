@@ -49,6 +49,7 @@ class Picker(Screen):
             lv.append(ListItem(Label(f"{crumb}{t.title}")))
         self.query_one("#count", Static).update(
             f"{len(self.rows)} pickable · {self.store.done_today()} done today"
+            f" · {len(self.store.open_noise())} noise"
         )
 
     @on(Input.Changed, "#filter")

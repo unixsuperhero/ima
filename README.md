@@ -24,7 +24,31 @@ uv run now                 # open the TUI
 uv run now add "title"     # add a task from a shell
 uv run now ls              # list pickable tasks (* marks the active one)
 uv run now touch           # record activity; call from shell precmd or editor hooks
+
+uv run now capture "text"             # raw noise from a shell; -s SOURCE -r URL; reads stdin if no text
+uv run now noise                      # list open noise
+uv run now extract NOISE_ID "title"   # noise -> task, linked both ways
+uv run now drop NOISE_ID...           # discard noise
+uv run now poll                       # pull github and slack once (or: now poll github)
+uv run now poll --loop 120            # keep polling every 2 minutes
 ```
+
+## Funnel
+
+`now poll github` uses the already-authenticated `gh` CLI and captures:
+
+- open PRs where your review is requested (`github.review_request`)
+- unread PR notifications (`github.pr_inbox`)
+- check or review-decision changes on your own open PRs (`github.ci_status`, `github.pr_status`);
+  the first sighting of a PR is recorded silently, only later changes become noise
+
+`now poll slack` needs `SLACK_TOKEN` (a user token; for an `xoxc-` session token also
+set `SLACK_COOKIE` to the `d` cookie value). It captures mentions and thread replies that
+mention you via search, and new DM or group-DM messages from others (`slack.message`,
+`slack.thread`). DM history starts from the last 24 hours on the first poll.
+
+Re-polled items are deduplicated by key, so polling is safe to repeat. Poller cursors
+live in `poll-state.json` next to the event log.
 
 Data lives in `~/.local/share/now/` (override with `NOW_HOME`).
 
