@@ -1,0 +1,16 @@
+[project]
+name = "now"
+version = "0.1.0"
+description = "Single-task TUI: one active task, idle and overrun timers, done opens the picker"
+requires-python = ">=3.12"
+dependencies = ["textual>=3.0"]
+
+[project.scripts]
+now = "now.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["now"]
