@@ -5,8 +5,14 @@ Events (one JSON object per line):
   {"at": iso, "type": "task.activate", "id": str}
   {"at": iso, "type": "task.unset",    "id": str, "reason": "idle"|"overrun"|"manual"}
   {"at": iso, "type": "task.done",     "id": str}
-  {"at": iso, "type": "noise.add",     "id": str, "key": str, "source": str, "ref": str|None, "body": str}
+  {"at": iso, "type": "task.context",  "id": str, "cwd": str}
+  {"at": iso, "type": "noise.add",     "id": str, "key": str, "source": str, "ref": str|None, "body": str, "task": str|None}
   {"at": iso, "type": "noise.done",    "id": str, "task": str|None}
+  {"at": iso, "type": "run.start",     "id": str, "task": str, "kind": "command"|"prompt", "text": str, "cwd": str}
+  {"at": iso, "type": "run.finish",    "id": str, "exit": int, "duration_ms": int, "tail": str}
+
+A run is a command or an agent prompt started from inside the app, always
+attributed to a task. Full output lives in runs/<id>.log; `tail` is the end.
 
 Noise is raw input from a funnel source. `key` dedups re-polled items.
 """
@@ -43,6 +49,8 @@ class Task:
     activated_at: str | None = None
     done_at: str | None = None
     from_noise: str | None = None
+    kind: str = "do"  # do | know
+    cwd: str | None = None
 
 
 @dataclass
@@ -55,6 +63,19 @@ class Noise:
     created_at: str
     state: str = "open"  # open | done
     task: str | None = None
+
+
+@dataclass
+class Run:
+    id: str
+    task: str
+    kind: str
+    text: str
+    cwd: str
+    started_at: str
+    exit: int | None = None
+    duration_ms: int | None = None
+    tail: str = ""
 
 
 class Store:
@@ -84,12 +105,14 @@ class Store:
             t = e["type"]
             if t == "task.add":
                 tasks[e["id"]] = Task(e["id"], e["title"], e.get("parent"), e["at"],
-                                      from_noise=e.get("from"))
+                                      from_noise=e.get("from"), kind=e.get("kind", "do"))
                 continue
             task = tasks.get(e["id"])
             if task is None:
                 continue
-            if t == "task.activate":
+            if t == "task.context":
+                task.cwd = e["cwd"]
+            elif t == "task.activate":
                 for other in tasks.values():
                     if other.state == "active":
                         other.state = "open"
@@ -131,33 +154,62 @@ class Store:
         items: dict[str, Noise] = {}
         for e in self.events():
             if e["type"] == "noise.add":
-                items[e["id"]] = Noise(e["id"], e["key"], e["source"], e.get("ref"), e["body"], e["at"])
+                items[e["id"]] = Noise(e["id"], e["key"], e["source"], e.get("ref"), e["body"], e["at"],
+                                       task=e.get("task"))
             elif e["type"] == "noise.done" and e["id"] in items:
                 items[e["id"]].state = "done"
-                items[e["id"]].task = e.get("task")
+                items[e["id"]].task = e.get("task") or items[e["id"]].task
         return items
+
+    def runs(self, task_id: str | None = None) -> list[Run]:
+        runs: dict[str, Run] = {}
+        for e in self.events():
+            if e["type"] == "run.start":
+                runs[e["id"]] = Run(e["id"], e["task"], e["kind"], e["text"], e["cwd"], e["at"])
+            elif e["type"] == "run.finish" and e["id"] in runs:
+                r = runs[e["id"]]
+                r.exit, r.duration_ms, r.tail = e["exit"], e["duration_ms"], e.get("tail", "")
+        return [r for r in runs.values() if task_id is None or r.task == task_id]
 
     def open_noise(self) -> list[Noise]:
         return sorted((n for n in self.noise().values() if n.state == "open"),
                       key=lambda n: n.created_at)
 
     # -- commands ---------------------------------------------------------
-    def add(self, title: str, parent: str | None = None, from_noise: str | None = None) -> Task:
+    def add(self, title: str, parent: str | None = None, from_noise: str | None = None,
+            kind: str = "do") -> Task:
         task_id = secrets.token_hex(4)
         e = self.append({"type": "task.add", "id": task_id, "title": title, "parent": parent,
-                         "from": from_noise})
-        return Task(task_id, title, parent, e["at"], from_noise=from_noise)
+                         "from": from_noise, "kind": kind})
+        return Task(task_id, title, parent, e["at"], from_noise=from_noise, kind=kind)
+
+    def set_cwd(self, task_id: str, cwd: str) -> None:
+        self.append({"type": "task.context", "id": task_id, "cwd": cwd})
 
     def capture(self, body: str, source: str = "cli", ref: str | None = None,
-                key: str | None = None) -> Noise | None:
+                key: str | None = None, task: str | None = None) -> Noise | None:
         """Append a noise item. Returns None if `key` was already captured."""
         key = key or f"{source}:{secrets.token_hex(4)}"
         if any(n.key == key for n in self.noise().values()):
             return None
         noise_id = secrets.token_hex(4)
         e = self.append({"type": "noise.add", "id": noise_id, "key": key, "source": source,
-                         "ref": ref, "body": body})
-        return Noise(noise_id, key, source, ref, body, e["at"])
+                         "ref": ref, "body": body, "task": task})
+        return Noise(noise_id, key, source, ref, body, e["at"], task=task)
+
+    def run_start(self, task_id: str, kind: str, text: str, cwd: str) -> Run:
+        run_id = secrets.token_hex(4)
+        e = self.append({"type": "run.start", "id": run_id, "task": task_id, "kind": kind,
+                         "text": text, "cwd": cwd})
+        (self.root / "runs").mkdir(exist_ok=True)
+        return Run(run_id, task_id, kind, text, cwd, e["at"])
+
+    def run_log(self, run_id: str) -> Path:
+        return self.root / "runs" / f"{run_id}.log"
+
+    def run_finish(self, run_id: str, exit_code: int, duration_ms: int, tail: str) -> None:
+        self.append({"type": "run.finish", "id": run_id, "exit": exit_code,
+                     "duration_ms": duration_ms, "tail": tail[-2000:]})
 
     def extract(self, noise_id: str, title: str) -> Task:
         task = self.add(title, from_noise=noise_id)

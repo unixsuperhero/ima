@@ -14,6 +14,7 @@ def main(argv: list[str] | None = None) -> int:
 
     add = sub.add_parser("add", help="add a task without opening the TUI")
     add.add_argument("title", nargs="+")
+    add.add_argument("--know", action="store_true", help="a to-know task instead of a to-do")
     sub.add_parser("ls", help="list pickable tasks")
     sub.add_parser("touch", help="record activity (call from shell or editor hooks)")
 
@@ -34,16 +35,17 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     store = Store()
+    store.touch()  # any now command is activity for the active task
 
     if args.cmd == "add":
-        t = store.add(" ".join(args.title))
+        t = store.add(" ".join(args.title), kind="know" if args.know else "do")
         print(t.id, t.title)
     elif args.cmd == "ls":
         active = store.active()
         for t in store.pickable():
-            print(("*" if active and t.id == active.id else " "), t.id, t.title)
+            print(("*" if active and t.id == active.id else " "), t.id, ("?" if t.kind == "know" else " "), t.title)
     elif args.cmd == "touch":
-        store.touch()
+        pass
     elif args.cmd == "capture":
         body = " ".join(args.text) if args.text else sys.stdin.read().strip()
         if not body:

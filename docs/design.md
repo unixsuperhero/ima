@@ -4,7 +4,7 @@
 
 | Level | What lives here | Only verb | Built |
 | --- | --- | --- | --- |
-| Noise | raw captures from every funnel source | extract | CLI: capture, noise, extract, drop, poll |
+| Noise | raw captures from every funnel source | extract | Noise screen + CLI: capture, noise, extract, drop, poll |
 | Items | tasks, to-knows, deferred motivations | pick | tasks only |
 | Now | the single active task and its children | finish | yes |
 | Review | done log, counts per day | read | count in picker header only |
@@ -14,14 +14,15 @@
 Everything is a typed item with metadata. Collections are filters over items.
 
 ```js
-task       = { id, type:'task', meta:{ title, state:'open'|'active'|'done', parent, from: noiseId } }
-noise      = { id, type:'noise', meta:{ body, source, ref, at } }
+task       = { id, type:'task', meta:{ title, kind:'do'|'know', state:'open'|'active'|'done', parent, from: noiseId, cwd } }
+run        = { id, type:'run',  meta:{ task, kind:'command'|'prompt', text, cwd, exit, duration_ms, tail } }
+noise      = { id, type:'noise', meta:{ body, source, ref, at, task } }
 know       = { id, type:'know', meta:{ question, answer, state } }
 motivation = { id, type:'motivation', meta:{ title, why, unlockAt, from: learnRunId } }
 action     = { id, type:'action', meta:{ verb, taskId, at } }
 ```
 
-Today `task` and `noise` exist, stored as an append-only event log in
+Today `task`, `noise`, and `run` exist, stored as an append-only event log in
 `events.jsonl`. State is derived by replaying the log. See `now/store.py`.
 A task made by `extract` carries `from: noiseId`; the noise carries `task: taskId`.
 
@@ -35,10 +36,16 @@ registered in h-mcp, never a Slack token held by this app;
 
 ```js
 source = 'cli' | 'clipboard' | 'pane'
+       | 'agent.response'
        | 'slack.message' | 'slack.thread'
        | 'github.review_request' | 'github.pr_inbox'
        | 'github.ci_status' | 'github.pr_status'
 ```
+
+`agent.response` is the one source that arrives already linked to a task: an
+`:ask` whose reply lands after you moved on. Shell runs and prompts are the
+first two infinitives the app gates: run and ask. Both are impossible without
+an active task because the command line only exists on the Now screen.
 
 Extraction is itself a task ("triage noise") so clearing the inbox is a checkmark.
 
@@ -55,7 +62,15 @@ rules = [
 Activity is the mtime of one file. Any process can bump it with `now touch`,
 so editors and shells outside the TUI count as working.
 
+## Terminal, agents, and the app
+
+Panes and windows are where work physically happens; a pane id is only ever a
+`ref`. The active task is global to the person. Every run started from the app
+carries `NOW_TASK` and `NOW_RUN` in its environment so child processes and hooks
+can attribute their own events. Projects are not a type: a task's `cwd` (its
+repo) is the grouping that exists in practice, and a parent task groups subtasks.
+
 ## Not yet built
 
-A Noise screen in the TUI (triage is CLI only), learn-for-later runs,
-per-task theming, tuios activity and pane capture, review screen.
+Learn-for-later runs (`now learn`), per-task theming, tuios event subscription
+for activity in other panes, a review screen, a web UI mirroring the TUI.

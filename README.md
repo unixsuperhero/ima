@@ -21,7 +21,7 @@ Finishing opens the picker. Nothing else is on screen.
 ```sh
 uv sync
 uv run now                 # open the TUI
-uv run now add "title"     # add a task from a shell
+uv run now add "title"     # add a task from a shell; --know for a to-know task
 uv run now ls              # list pickable tasks (* marks the active one)
 uv run now touch           # record activity; call from shell precmd or editor hooks
 
@@ -67,26 +67,60 @@ Data lives in `~/.local/share/now/` (override with `NOW_HOME`).
 
 ## Keys
 
+Modal, like vim. A focused text box is insert mode; Esc leaves it. Everything else is
+single letters in normal mode. Every key anywhere counts as activity.
+
 | Screen | Key | Does |
 | --- | --- | --- |
-| Picker | type + Enter | activate top match, or create the typed task |
-| Picker | ctrl+r | activate a random pickable task |
+| Picker | type + Enter | activate the top match, or create the typed task; a leading `?` makes a to-know task |
+| Picker | Esc / i / `/` | normal mode (j k Enter on the list) / back to the filter |
+| Picker | r, ctrl+r | activate a random pickable task |
+| Picker | n | noise screen |
 | Now | d | done, back to picker |
 | Now | s | split: name the smallest piece, it becomes the active task |
 | Now | u | put the task back |
+| Now | n | noise screen |
+| Now | : | command line (below) |
+| Noise | j k | move |
+| Noise | e, Enter | extract into a task (title prefilled from the first line) |
+| Noise | x | drop |
+| Noise | o | open the ref with `open` |
+| Noise | Esc, q | back to picker |
 | any | ctrl+q | quit |
+
+## Command line
+
+Press `:` on the Now screen. Every run is attributed to the active task, executes in the
+task's working directory, streams into the log panel, and is recorded as `run.start` and
+`run.finish` events with the full output in `runs/<id>.log`.
+
+```
+:!CMD         run a shell command            (NOW_TASK and NOW_RUN are set in its environment)
+:ask PROMPT   send a prompt to the agent     (NOW_AGENT_CMD, default `claude -p`)
+:add TITLE    add a child task
+:cd PATH      set this task's working directory
+:done :split :unset :noise :q
+```
+
+If you are still on the task when an agent reply finishes, it is shown in the log. If you
+have moved on, the reply becomes noise (`agent.response`) linked to the task, and you get a
+notification. Waiting on an agent is never a thing you do.
 
 ## Rules
 
-- Any keypress in the TUI, or `now touch` from anywhere, counts as activity.
+- Any keypress in the TUI, any `now` CLI command, or `now touch` from a hook counts as activity.
 - No activity for 3 minutes puts the task back and opens the picker.
 - A gap of 1 to 3 minutes counts as a break.
 - 15 minutes active with zero breaks puts the task back and asks for a split.
+- Idle and overrun also send a notification outside the pane: OSC 9 to the terminal
+  (tuios shows it) and a macOS notification. `NOW_NOTIFY=0` silences both.
 - Only open tasks with no open children are pickable, oldest first. No priority field.
 
 ## Context
 
 - [Agent instructions](AGENTS.md)
 - [Documentation index](docs/index.md)
+- [Brief](docs/brief.md)
 - [Design: levels, data model, funnel](docs/design.md)
+- [User stories](docs/user-stories.md)
 - [Thinktank shared conventions](file:///Users/unixsuperhero/proj/thinktank/docs/shared-conventions.md)

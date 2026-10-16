@@ -104,13 +104,20 @@ the only metric the app shows. Hours never appear anywhere.
   third place to be.
 - Finishing is one key. Choosing is one key. Shrinking is one sentence.
 
+## 7. Running things without leaving
+
+On `fix flaky login test` I press `:` and type `!uv run pytest -x tests/test_login.py`.
+Output streams into the panel under the task. Exit 1, 40 seconds, recorded against the
+task. `:ask why would this test pass alone and fail in the suite` sends the file to the
+agent. I don't wait: `u`, pick the next thing. Three minutes later a notification says
+the agent replied. Next time I'm in the picker, the noise count is one higher and the
+reply is already linked to the test task.
+
 ## Rough edges today
 
-- CLI commands in another pane (`now noise`, `now extract`) do not count as
-  activity, so triaging for three minutes gets `triage noise` put back. Only TUI
-  keypresses and `now touch` count.
-- The idle notification is a toast inside the TUI. If the pane is hidden, nothing
-  gets my attention. Story 3 only works if the pane is visible.
-- Triage happens in a shell, not a Noise screen in the TUI.
+- Activity from other panes still only counts through `now` CLI calls or `now touch`.
+  A tuios event subscription would make any keystroke in the session count.
 - There is no Review screen; the done count in the picker header is all there is.
 - Per-task theming is not built, so switching tasks does not change the colors.
+- No web UI yet.
+
