@@ -16,14 +16,15 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.theme import Theme
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Input, Label, ListItem, ListView, RichLog, Static
 
 from . import engine
-from . import watch
+from . import learn, watch
 from .notify import notify
 from .store import Noise as NoiseItem
-from .store import Store, Task
+from .store import Motivation, Store, Task
 
 
 class ListScreen(Screen):
@@ -50,6 +51,7 @@ class Picker(ListScreen):
         Binding("r", "random", "Deal one"),
         Binding("ctrl+r", "random", "Deal one", show=False),
         Binding("n", "noise", "Noise"),
+        Binding("l", "later", "Later"),
     ]
 
     def __init__(self, store: Store):
@@ -63,10 +65,6 @@ class Picker(ListScreen):
         yield ListView(id="rows")
         yield Footer()
 
-    def on_mount(self) -> None:
-        self.refresh_rows("")
-        self.query_one("#filter", Input).focus()
-
     def refresh_rows(self, text: str) -> None:
         text = text.strip().lower()
         tasks = self.store.tasks()
@@ -79,7 +77,7 @@ class Picker(ListScreen):
             lv.append(ListItem(Label(f"{kind}{crumb}{t.title}")))
         self.query_one("#count", Static).update(
             f"{len(self.rows)} pickable · {self.store.done_today()} done today"
-            f" · {len(self.store.open_noise())} noise"
+            f" · {len(self.store.open_noise())} noise · {len(self.store.motivations())} later"
         )
 
     @on(Input.Changed, "#filter")
@@ -116,6 +114,17 @@ class Picker(ListScreen):
 
     def action_noise(self) -> None:
         self.app.switch_screen(Noise(self.store))
+
+    def action_later(self) -> None:
+        self.app.switch_screen(Later(self.store))
+
+    def on_screen_resume(self) -> None:
+        self.app.theme = "textual-dark"
+
+    def on_mount(self) -> None:
+        self.app.theme = "textual-dark"
+        self.refresh_rows("")
+        self.query_one("#filter", Input).focus()
 
     def pick(self, task: Task) -> None:
         self.store.activate(task.id)
@@ -211,12 +220,84 @@ class Noise(ListScreen):
             subprocess.Popen(["open", n.ref], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+class Later(ListScreen):
+    """Motivations from learn runs. Locked rows cannot be promoted. p promote, x dismiss, Esc back."""
+
+    BINDINGS = [
+        Binding("escape,q", "back", "Back"),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        Binding("p,enter", "promote", "Promote"),
+        Binding("x", "dismiss_item", "Dismiss"),
+    ]
+
+    def __init__(self, store: Store):
+        super().__init__()
+        self.store = store
+        self.rows: list[Motivation] = []
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="count")
+        yield ListView(id="rows")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.refresh_rows()
+        self.query_one("#rows", ListView).focus()
+
+    def refresh_rows(self) -> None:
+        self.rows = self.store.motivations()
+        lv = self.query_one("#rows", ListView)
+        index = lv.index or 0
+        lv.clear()
+        for m in self.rows:
+            lock = f"🔒 {m.unlock_at[:10]}" if m.locked() else "open"
+            lv.append(ListItem(Label(f"[{lock}] {m.title} · {m.why}")))
+        lv.index = min(index, len(self.rows) - 1) if self.rows else None
+        locked = sum(1 for m in self.rows if m.locked())
+        self.query_one("#count", Static).update(
+            f"{len(self.rows)} later · {locked} locked · p promote · x dismiss · Esc back")
+
+    def current(self) -> Motivation | None:
+        lv = self.query_one("#rows", ListView)
+        return self.rows[lv.index] if self.rows and lv.index is not None else None
+
+    def action_back(self) -> None:
+        self.app.switch_screen(Picker(self.store))
+
+    def action_promote(self) -> None:
+        m = self.current()
+        if not m:
+            return
+        if m.locked():
+            self.app.notify(f"Locked until {m.unlock_at[:10]}. Not now.", severity="warning")
+            return
+        self.store.promote(m.id)
+        self.refresh_rows()
+
+    def action_dismiss_item(self) -> None:
+        m = self.current()
+        if m:
+            self.store.dismiss(m.id)
+            self.refresh_rows()
+
+
+def task_theme(task_id: str) -> Theme:
+    """The whole app takes the task's color: a hue derived from its id."""
+    hue = int(task_id[:6], 16) % 360
+    import colorsys
+    r, g, b = colorsys.hls_to_rgb(hue / 360, 0.55, 0.65)
+    primary = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+    return Theme(name=f"task-{task_id}", primary=primary, dark=True)
+
+
 class Now(Screen):
     """The active task. d done, s split, u put back, : command line, n noise.
 
     Command line (vim style):
       :!CMD        run a shell command in the task's cwd, output captured to the run log
       :ask PROMPT  send a prompt to the agent (NOW_AGENT_CMD, default `claude -p`)
+      :learn TOPIC throwaway run; the answer becomes locked motivations for later
       :add TITLE   add a child task
       :cd PATH     set the task's working directory
       :done :split :unset :noise :q
@@ -247,6 +328,9 @@ class Now(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
+        theme = task_theme(self.item.id)
+        self.app.register_theme(theme)
+        self.app.theme = theme.name
         self.query_one("#cmd", Input).display = False
         self.query_one("#children", ListView).can_focus = False
         self.refresh_children()
@@ -337,6 +421,8 @@ class Now(Screen):
             self.run("command", line[1:].strip())
         elif word == "ask" and rest:
             self.run("prompt", rest)
+        elif word == "learn" and rest:
+            self.run("learn", rest)
         elif word == "add" and rest:
             self.store.add(rest, parent=self.item.id)
             self.refresh_children()
@@ -357,6 +443,8 @@ class Now(Screen):
     def run(self, kind: str, text: str) -> None:
         if kind == "prompt":
             shell = f"{os.environ.get('NOW_AGENT_CMD', 'claude -p')} {shlex.quote(text)}"
+        elif kind == "learn":
+            shell = learn.agent_shell(text)
         else:
             shell = text
         run = self.store.run_start(self.item.id, kind, text, self.cwd())
@@ -383,6 +471,10 @@ class Now(Screen):
         tail = "".join(chunks)[-2000:]
         self.store.run_finish(run_id, code, duration, tail)
         log.write(f"[exit {code} in {engine.fmt(duration / 1000)}]")
+        if kind == "learn":
+            items = learn.record(self.store, "".join(chunks), run=run_id)
+            log.write(f"[{len(items)} motivations locked until {items[0].unlock_at[:10] if items else '-'}]")
+            return
         if kind == "prompt":
             active = self.store.active()
             if not active or active.id != self.item.id:
@@ -393,7 +485,7 @@ class Now(Screen):
 
 class NowApp(App):
     CSS = """
-    #title { padding: 2 4; text-style: bold; content-align: center middle; height: 7; }
+    #title { padding: 2 4; text-style: bold; content-align: center middle; height: 7; color: $primary; border: heavy $primary; margin: 0 4; }
     #clock { padding: 0 4; color: $text-muted; }
     #children { margin: 1 4; height: auto; max-height: 8; }
     #log { margin: 0 4; height: 1fr; border: round $surface-lighten-2; }

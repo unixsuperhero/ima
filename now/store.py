@@ -66,6 +66,21 @@ class Noise:
 
 
 @dataclass
+class Motivation:
+    id: str
+    title: str
+    why: str
+    unlock_at: str
+    created_at: str
+    run: str | None = None
+    state: str = "open"  # open | done
+    task: str | None = None
+
+    def locked(self, at: str | None = None) -> bool:
+        return (at or now_iso()) < self.unlock_at
+
+
+@dataclass
 class Run:
     id: str
     task: str
@@ -161,6 +176,16 @@ class Store:
                 items[e["id"]].task = e.get("task") or items[e["id"]].task
         return items
 
+    def motivations(self) -> list[Motivation]:
+        items: dict[str, Motivation] = {}
+        for e in self.events():
+            if e["type"] == "motivation.add":
+                items[e["id"]] = Motivation(e["id"], e["title"], e.get("why", ""), e["unlock_at"], e["at"], e.get("run"))
+            elif e["type"] == "motivation.done" and e["id"] in items:
+                items[e["id"]].state = "done"
+                items[e["id"]].task = e.get("task")
+        return sorted((m for m in items.values() if m.state == "open"), key=lambda m: (m.unlock_at, m.created_at))
+
     def runs(self, task_id: str | None = None) -> list[Run]:
         runs: dict[str, Run] = {}
         for e in self.events():
@@ -196,6 +221,23 @@ class Store:
         e = self.append({"type": "noise.add", "id": noise_id, "key": key, "source": source,
                          "ref": ref, "body": body, "task": task})
         return Noise(noise_id, key, source, ref, body, e["at"], task=task)
+
+    def motivate(self, title: str, why: str, unlock_at: str, run: str | None = None) -> Motivation:
+        mid = secrets.token_hex(4)
+        e = self.append({"type": "motivation.add", "id": mid, "title": title, "why": why,
+                         "unlock_at": unlock_at, "run": run})
+        return Motivation(mid, title, why, unlock_at, e["at"], run)
+
+    def promote(self, motivation_id: str) -> Task:
+        m = next(m for m in self.motivations() if m.id == motivation_id)
+        if m.locked():
+            raise ValueError(f"locked until {m.unlock_at}")
+        task = self.add(m.title)
+        self.append({"type": "motivation.done", "id": m.id, "task": task.id})
+        return task
+
+    def dismiss(self, motivation_id: str) -> None:
+        self.append({"type": "motivation.done", "id": motivation_id, "task": None})
 
     def run_start(self, task_id: str, kind: str, text: str, cwd: str) -> Run:
         run_id = secrets.token_hex(4)

@@ -113,9 +113,15 @@ agent. I don't wait: `u`, pick the next thing. Three minutes later a notificatio
 the agent replied. Next time I'm in the picker, the noise count is one higher and the
 reply is already linked to the test task.
 
+## 8. Curiosity without derailing
+
+Halfway through a task I wonder how Bubble Tea handles focus. `:learn bubble tea focus
+handling for a tui`. The run finishes in the log: `[5 motivations locked until 2026-10-22]`.
+I never read them today. Next week `l` in the picker shows them unlocked, and `p` turns the
+one I still care about into a task. The other four get `x`.
+
 ## Rough edges today
 
 - There is no Review screen; the done count in the picker header is all there is.
-- Per-task theming is not built, so switching tasks does not change the colors.
 - No web UI yet.
 

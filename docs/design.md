@@ -18,11 +18,11 @@ task       = { id, type:'task', meta:{ title, kind:'do'|'know', state:'open'|'ac
 run        = { id, type:'run',  meta:{ task, kind:'command'|'prompt', text, cwd, exit, duration_ms, tail } }
 noise      = { id, type:'noise', meta:{ body, source, ref, at, task } }
 know       = { id, type:'know', meta:{ question, answer, state } }
-motivation = { id, type:'motivation', meta:{ title, why, unlockAt, from: learnRunId } }
+motivation = { id, type:'motivation', meta:{ title, why, unlock_at, run, state:'open'|'done', task } }
 action     = { id, type:'action', meta:{ verb, taskId, at } }
 ```
 
-Today `task`, `noise`, and `run` exist, stored as an append-only event log in
+Today `task`, `noise`, `run`, and `motivation` exist, stored as an append-only event log in
 `events.jsonl`. State is derived by replaying the log. See `now/store.py`.
 A task made by `extract` carries `from: noiseId`; the noise carries `task: taskId`.
 
@@ -70,7 +70,14 @@ carries `NOW_TASK` and `NOW_RUN` in its environment so child processes and hooks
 can attribute their own events. Projects are not a type: a task's `cwd` (its
 repo) is the grouping that exists in practice, and a parent task groups subtasks.
 
+## Later, strictly
+
+`:learn TOPIC` or `now learn` is a run of kind `learn`. Its answer is parsed as
+`title | why` lines into motivations with an `unlock_at` seven days out. The
+Later screen lists them, and `promote` refuses while locked. Nothing from a
+learn run is ever pickable on the day it was asked.
+
 ## Not yet built
 
-Learn-for-later runs (`now learn`), per-task theming, a review screen, a web UI
-mirroring the TUI.
+A review screen, a generic selector across every collection, a web UI mirroring
+the TUI. `know` tasks are stored and shown but have no behavior of their own yet.

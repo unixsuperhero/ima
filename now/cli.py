@@ -33,6 +33,9 @@ def main(argv: list[str] | None = None) -> int:
     poll.add_argument("sources", nargs="*", default=["github", "slack"], choices=["github", "slack"])
     poll.add_argument("--loop", type=int, metavar="SECONDS", help="repeat forever at this interval")
     sub.add_parser("watch", help="follow tuios events: panes count as activity, agent states become noise")
+    learn = sub.add_parser("learn", help="throwaway 'learn about X for Y' run; output becomes locked motivations")
+    learn.add_argument("topic", nargs="+")
+    sub.add_parser("later", help="list motivations; locked ones show their unlock date")
 
     args = parser.parse_args(argv)
     store = Store()
@@ -70,6 +73,14 @@ def main(argv: list[str] | None = None) -> int:
             if not args.loop:
                 break
             time.sleep(args.loop)
+    elif args.cmd == "learn":
+        from .learn import learn
+        for m in learn(store, " ".join(args.topic)):
+            print(m.id, "locked until", m.unlock_at[:10], "·", m.title)
+    elif args.cmd == "later":
+        for m in store.motivations():
+            lock = f"locked until {m.unlock_at[:10]}" if m.locked() else "unlocked"
+            print(m.id, f"[{lock}]", m.title, "·", m.why)
     elif args.cmd == "watch":
         from .watch import watch
         import os

@@ -147,3 +147,32 @@ class AppTest(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("escape")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, Picker)
+
+
+class LaterTest(unittest.IsolatedAsyncioTestCase):
+    async def test_learn_command_then_later_screen_respects_lock(self):
+        from now.learn import record
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(
+                os.environ, {"NOW_AGENT_CMD": "echo 'x | y' #", "NOW_LEARN_UNLOCK_DAYS": "7"}):
+            store = Store(Path(tmp))
+            t = store.add("real work")
+            store.activate(t.id)
+            app = NowApp(store)
+            async with app.run_test(size=(100, 30)) as pilot:
+                self.assertTrue(app.theme.startswith("task-"))
+                await pilot.press("colon", *"learn rust for tuis", "enter")
+                await settle(pilot, app)
+                self.assertEqual([m.title for m in store.motivations()], ["x"])
+                self.assertEqual([r.kind for r in store.runs(t.id)], ["learn"])
+                await pilot.press("u", "escape", "l")
+                await pilot.pause()
+                self.assertEqual(app.theme, "textual-dark")
+                await pilot.press("p")  # locked: refused
+                await pilot.pause()
+                self.assertEqual([x.title for x in store.pickable()], ["real work"])
+                os.environ["NOW_LEARN_UNLOCK_DAYS"] = "-1"
+                record(store, "free | now")
+                app.screen.refresh_rows()
+                await pilot.press("k", "p")  # the unlocked row sorts first
+                await pilot.pause()
+                self.assertEqual([x.title for x in store.pickable()], ["real work", "free"])

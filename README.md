@@ -32,7 +32,15 @@ uv run now drop NOISE_ID...           # discard noise
 uv run now poll                       # pull github and slack once (or: now poll github)
 uv run now poll --loop 120            # keep polling every 2 minutes
 uv run now watch                      # inside tuios: panes count as activity, agent states become noise
+uv run now learn "rust for tuis"      # throwaway run; prints the motivations it locked
+uv run now later                      # list motivations with their unlock dates
 ```
+
+## Theme
+
+The Now screen registers a Textual theme whose primary color is a hue derived from the
+task id, so every task has its own color and the picker returns to the default. The task
+is the mode; the color says so.
 
 ## Funnel
 
@@ -77,6 +85,7 @@ single letters in normal mode. Every key anywhere counts as activity.
 | Picker | Esc / i / `/` | normal mode (j k Enter on the list) / back to the filter |
 | Picker | r, ctrl+r | activate a random pickable task |
 | Picker | n | noise screen |
+| Picker | l | later screen: motivations from learn runs |
 | Now | d | done, back to picker |
 | Now | s | split: name the smallest piece, it becomes the active task |
 | Now | u | put the task back |
@@ -87,6 +96,8 @@ single letters in normal mode. Every key anywhere counts as activity.
 | Noise | x | drop |
 | Noise | o | open the ref with `open` |
 | Noise | Esc, q | back to picker |
+| Later | p, Enter | promote an unlocked motivation to a task; locked rows refuse |
+| Later | x | dismiss |
 | any | ctrl+q | quit |
 
 ## Command line
@@ -98,6 +109,7 @@ task's working directory, streams into the log panel, and is recorded as `run.st
 ```
 :!CMD         run a shell command            (NOW_TASK and NOW_RUN are set in its environment)
 :ask PROMPT   send a prompt to the agent     (NOW_AGENT_CMD, default `claude -p`)
+:learn TOPIC  throwaway run; the answer becomes motivations locked for NOW_LEARN_UNLOCK_DAYS (7)
 :add TITLE    add a child task
 :cd PATH      set this task's working directory
 :done :split :unset :noise :q
