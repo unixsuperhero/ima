@@ -5,9 +5,9 @@
 | Level | What lives here | Only verb | Built |
 | --- | --- | --- | --- |
 | Noise | raw captures from every funnel source | extract | Noise screen + CLI: capture, noise, extract, drop, poll |
-| Items | tasks, to-knows, deferred motivations | pick | tasks only |
+| Items | tasks, to-knows, deferred motivations | pick | Picker, Later screen |
 | Now | the single active task and its children | finish | yes |
-| Review | done log, counts per day | read | count in picker header only |
+| Review | done log, counts per local day | read | Review screen (v) and `now review` |
 
 ## Data model
 
@@ -70,6 +70,14 @@ carries `NOW_TASK` and `NOW_RUN` in its environment so child processes and hooks
 can attribute their own events. Projects are not a type: a task's `cwd` (its
 repo) is the grouping that exists in practice, and a parent task groups subtasks.
 
+## The selector
+
+`ctrl+f` anywhere opens one search box over every collection: open tasks, open
+noise, motivations, runs, done tasks, in that order. It is the only place where
+levels mix, and only as a list of typed rows. Enter acts by type and returns you
+to a single level: a task goes to Now, noise opens the extract prompt, an unlocked
+motivation is promoted, a run opens its log, a done task opens Review.
+
 ## Later, strictly
 
 `:learn TOPIC` or `now learn` is a run of kind `learn`. Its answer is parsed as
@@ -79,5 +87,5 @@ learn run is ever pickable on the day it was asked.
 
 ## Not yet built
 
-A review screen, a generic selector across every collection, a web UI mirroring
-the TUI. `know` tasks are stored and shown but have no behavior of their own yet.
+A web UI mirroring the TUI. `know` tasks are stored and shown but have no behavior
+of their own yet. Projects are not a type; `cwd` and parent tasks group work.

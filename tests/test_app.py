@@ -176,3 +176,40 @@ class LaterTest(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("k", "p")  # the unlocked row sorts first
                 await pilot.pause()
                 self.assertEqual([x.title for x in store.pickable()], ["real work", "free"])
+
+
+class SelectorReviewTest(unittest.IsolatedAsyncioTestCase):
+    async def test_find_from_anywhere_and_review(self):
+        from now.app import Review, Selector
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            a = store.add("alpha work")
+            store.add("beta work")
+            store.capture("gamma noise about alpha", source="cli")
+            app = NowApp(store)
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.press("ctrl+f")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, Selector)
+                await pilot.press(*"alpha", "enter")  # first match is the open task
+                await pilot.pause()
+                self.assertIsInstance(app.screen, Now)
+                self.assertEqual(store.active().id, a.id)
+
+                await pilot.press("ctrl+f")  # works on the Now screen too
+                await pilot.pause()
+                await pilot.press(*"gamma", "enter")  # a noise row: extract prompt
+                await pilot.pause()
+                await pilot.press("enter")  # accept prefilled title
+                await pilot.pause()
+                self.assertIn("gamma noise about alpha", [t.title for t in store.pickable()])
+
+                await pilot.press("d")
+                await pilot.pause()
+                await pilot.press("escape", "v")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, Review)
+                self.assertEqual(store.done_today(), 1)
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, Picker)

@@ -34,6 +34,8 @@ uv run now poll --loop 120            # keep polling every 2 minutes
 uv run now watch                      # inside tuios: panes count as activity, agent states become noise
 uv run now learn "rust for tuis"      # throwaway run; prints the motivations it locked
 uv run now later                      # list motivations with their unlock dates
+uv run now find alpha                 # search every collection
+uv run now review                     # done tasks by local day
 ```
 
 ## Theme
@@ -86,6 +88,8 @@ single letters in normal mode. Every key anywhere counts as activity.
 | Picker | r, ctrl+r | activate a random pickable task |
 | Picker | n | noise screen |
 | Picker | l | later screen: motivations from learn runs |
+| Picker | v | review screen: what got done, by day |
+| Picker | f | find: one search over every collection |
 | Now | d | done, back to picker |
 | Now | s | split: name the smallest piece, it becomes the active task |
 | Now | u | put the task back |
@@ -98,7 +102,12 @@ single letters in normal mode. Every key anywhere counts as activity.
 | Noise | Esc, q | back to picker |
 | Later | p, Enter | promote an unlocked motivation to a task; locked rows refuse |
 | Later | x | dismiss |
+| Review | j k, Esc | move, back; read only |
+| any | ctrl+f | find: tasks, noise, later, runs, done. Enter acts by type |
 | any | ctrl+q | quit |
+
+Find acts on what you pick: a task is activated, noise opens the extract prompt, an
+unlocked motivation is promoted, a run opens its log, a done task opens Review.
 
 ## Command line
 

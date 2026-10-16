@@ -94,8 +94,23 @@ minutes before I am asked to shrink it.
 
 ## 6. End of day
 
-The picker header reads `1 pickable · 11 done today · 14 noise`. That number is
-the only metric the app shows. Hours never appear anywhere.
+The picker header reads `1 pickable · 11 done today · 14 noise`. I press `v`:
+
+```
+11 done today · 63 all time · 9 days · Esc back
+2026-10-15  ·  11 done
+    17:42  fix the failing check on #12  · 3 runs
+    17:10  assert on the order, not the timestamp
+    ...
+```
+
+Count and time of day. Hours spent never appear anywhere.
+
+## 6b. Where did that thing go
+
+Someone asks about "the omniref link". `ctrl+f`, type `omniref`. One list, every
+collection: the done task from Tuesday, the PR notification it came from, and the
+run that fixed it. Enter on the done row opens Review on that day.
 
 ## The feel
 
@@ -122,6 +137,5 @@ one I still care about into a task. The other four get `x`.
 
 ## Rough edges today
 
-- There is no Review screen; the done count in the picker header is all there is.
 - No web UI yet.
 

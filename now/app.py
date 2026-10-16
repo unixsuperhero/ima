@@ -24,7 +24,7 @@ from . import engine
 from . import learn, watch
 from .notify import notify
 from .store import Noise as NoiseItem
-from .store import Motivation, Store, Task
+from .store import Motivation, Store, Task, local_time
 
 
 class ListScreen(Screen):
@@ -52,6 +52,8 @@ class Picker(ListScreen):
         Binding("ctrl+r", "random", "Deal one", show=False),
         Binding("n", "noise", "Noise"),
         Binding("l", "later", "Later"),
+        Binding("v", "review", "Review"),
+        Binding("f", "app.find", "Find"),
     ]
 
     def __init__(self, store: Store):
@@ -117,6 +119,9 @@ class Picker(ListScreen):
 
     def action_later(self) -> None:
         self.app.switch_screen(Later(self.store))
+
+    def action_review(self) -> None:
+        self.app.switch_screen(Review(self.store))
 
     def on_screen_resume(self) -> None:
         self.app.theme = "textual-dark"
@@ -280,6 +285,101 @@ class Later(ListScreen):
         if m:
             self.store.dismiss(m.id)
             self.refresh_rows()
+
+
+class Review(ListScreen):
+    """Read only. What got finished, by day. j/k move, Esc back."""
+
+    BINDINGS = [
+        Binding("escape,q", "back", "Back"),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+    ]
+
+    def __init__(self, store: Store):
+        super().__init__()
+        self.store = store
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="count")
+        yield ListView(id="rows")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        days = self.store.done_by_day()
+        total = sum(len(v) for v in days.values())
+        lv = self.query_one("#rows", ListView)
+        for day, tasks in days.items():
+            lv.append(ListItem(Label(f"{day}  ·  {len(tasks)} done"), classes="day"))
+            for t in tasks:
+                runs = len(self.store.runs(t.id))
+                extra = f"  · {runs} run{'s' if runs != 1 else ''}" if runs else ""
+                lv.append(ListItem(Label(f"    {local_time(t.done_at)}  {t.title}{extra}")))
+        self.query_one("#count", Static).update(
+            f"{self.store.done_today()} done today · {total} all time · {len(days)} days · Esc back")
+        lv.index = 0 if days else None
+        lv.focus()
+
+    def action_back(self) -> None:
+        self.app.switch_screen(Picker(self.store))
+
+
+class Selector(ModalScreen[tuple[str, str] | None]):
+    """One search box over every collection. Enter picks the highlighted row, Esc cancels."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, store: Store):
+        super().__init__()
+        self.store = store
+        self.rows: list[tuple[str, str, str]] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="find"):
+            yield Input(placeholder="find anything: tasks, noise, later, runs, done", id="query")
+            yield ListView(id="matches")
+            yield Static(id="hint")
+
+    def on_mount(self) -> None:
+        self.refresh_rows("")
+        self.query_one("#query", Input).focus()
+
+    def refresh_rows(self, text: str) -> None:
+        self.rows = self.store.search(text)
+        lv = self.query_one("#matches", ListView)
+        lv.clear()
+        for kind, _, label in self.rows[:200]:
+            lv.append(ListItem(Label(f"{kind:5} {label}")))
+        lv.index = 0 if self.rows else None
+        self.query_one("#hint", Static).update(
+            f"{len(self.rows)} matches · Enter: task→go, noise→extract, later→promote, run→open log, done→show")
+
+    @on(Input.Changed, "#query")
+    def changed(self, event: Input.Changed) -> None:
+        self.refresh_rows(event.value)
+
+    @on(Input.Submitted, "#query")
+    def submitted(self) -> None:
+        lv = self.query_one("#matches", ListView)
+        self.choose(lv.index if lv.index is not None else 0)
+
+    @on(ListView.Selected, "#matches")
+    def selected(self, event: ListView.Selected) -> None:
+        self.choose(event.list_view.index)
+
+    def key_down(self) -> None:
+        self.query_one("#matches", ListView).action_cursor_down()
+
+    def key_up(self) -> None:
+        self.query_one("#matches", ListView).action_cursor_up()
+
+    def choose(self, index: int | None) -> None:
+        if index is not None and index < len(self.rows):
+            kind, item_id, _ = self.rows[index]
+            self.dismiss((kind, item_id))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 def task_theme(task_id: str) -> Theme:
@@ -492,8 +592,15 @@ class NowApp(App):
     #cmd { dock: bottom; margin: 0 0 1 0; }
     #count { padding: 1 2; color: $text-muted; }
     #prompt { padding: 2 4; border: thick $warning; background: $surface; width: 80%; height: auto; margin: 4 8; }
+    #find { padding: 1 2; border: thick $primary; background: $surface; width: 90%; height: 80%; margin: 2 4; }
+    #find ListView { height: 1fr; }
+    #hint { color: $text-muted; }
+    .day { text-style: bold; color: $primary; }
     """
-    BINDINGS = [Binding("ctrl+q", "quit", "Quit", priority=True)]
+    BINDINGS = [
+        Binding("ctrl+q", "quit", "Quit", priority=True),
+        Binding("ctrl+f", "find", "Find", priority=True),
+    ]
 
     def __init__(self, store: Store | None = None):
         super().__init__()
@@ -501,6 +608,43 @@ class NowApp(App):
 
     def on_key(self) -> None:
         self.store.touch()
+
+    def action_find(self) -> None:
+        if isinstance(self.screen, Selector):
+            return
+        self.push_screen(Selector(self.store), self.selected)
+
+    def selected(self, result: tuple[str, str] | None) -> None:
+        """Act on a selector result by its type."""
+        if not result:
+            return
+        kind, item_id = result
+        if kind == "task":
+            task = self.store.tasks()[item_id]
+            self.store.activate(task.id)
+            self.switch_screen(Now(self.store, task))
+        elif kind == "noise":
+            n = self.store.noise()[item_id]
+
+            def after(title: str | None) -> None:
+                if title:
+                    self.store.extract(n.id, title)
+                    screen = self.screen
+                    if isinstance(screen, (Picker, Noise)):
+                        screen.refresh_rows(*([screen.query_one("#filter", Input).value] if isinstance(screen, Picker) else []))
+
+            self.push_screen(TextPrompt(n.body[:200], "Task title:", value=n.body.split("\n")[0][:72]), after)
+        elif kind == "later":
+            m = next(m for m in self.store.motivations() if m.id == item_id)
+            if m.locked():
+                self.notify(f"Locked until {m.unlock_at[:10]}. Not now.", severity="warning")
+            else:
+                self.store.promote(m.id)
+                self.notify(f"Promoted: {m.title}")
+        elif kind == "run":
+            subprocess.Popen(["open", str(self.store.run_log(item_id))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif kind == "done":
+            self.switch_screen(Review(self.store))
 
     def on_mount(self) -> None:
         active = self.store.active()

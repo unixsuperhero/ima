@@ -31,6 +31,15 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def local_date(iso: str) -> str:
+    """Calendar date of an ISO timestamp in the machine's local timezone."""
+    return datetime.fromisoformat(iso).astimezone().date().isoformat()
+
+
+def local_time(iso: str) -> str:
+    return datetime.fromisoformat(iso).astimezone().strftime("%H:%M")
+
+
 def data_dir() -> Path:
     home = os.environ.get("NOW_HOME")
     if home:
@@ -161,9 +170,37 @@ class Store:
         out.sort(key=lambda t: t.created_at)
         return out
 
+    def done_by_day(self) -> dict[str, list[Task]]:
+        """Local calendar date -> done tasks, newest day first, newest task first within a day."""
+        days: dict[str, list[Task]] = {}
+        done = sorted((t for t in self.tasks().values() if t.done_at), key=lambda t: t.done_at, reverse=True)
+        for t in done:
+            days.setdefault(local_date(t.done_at), []).append(t)
+        return days
+
     def done_today(self) -> int:
-        today = datetime.now(timezone.utc).date().isoformat()
-        return sum(1 for t in self.tasks().values() if t.done_at and t.done_at.startswith(today))
+        return len(self.done_by_day().get(local_date(now_iso()), []))
+
+    def search(self, text: str) -> list[tuple[str, str, str]]:
+        """Every collection at once: (kind, id, label). Open tasks first, then noise, later, runs, done."""
+        text = text.strip().lower()
+        tasks = self.tasks()
+        rows: list[tuple[str, str, str]] = []
+        for t in sorted(tasks.values(), key=lambda t: t.created_at):
+            if t.state != "done":
+                crumb = f"{tasks[t.parent].title} › " if t.parent in tasks else ""
+                rows.append(("task", t.id, f"{'? ' if t.kind == 'know' else ''}{crumb}{t.title}"))
+        for n in self.open_noise():
+            rows.append(("noise", n.id, f"[{n.source}] {n.body[:120]}".replace("\n", " ")))
+        for m in self.motivations():
+            rows.append(("later", m.id, f"{'locked ' + m.unlock_at[:10] if m.locked() else 'open'} · {m.title}"))
+        for r in reversed(self.runs()):
+            status = "running" if r.exit is None else f"exit {r.exit}"
+            rows.append(("run", r.id, f"{r.kind} {status} · {r.text[:100]} · {tasks[r.task].title if r.task in tasks else ''}"))
+        for t in sorted(tasks.values(), key=lambda t: t.done_at or "", reverse=True):
+            if t.state == "done":
+                rows.append(("done", t.id, f"{local_date(t.done_at)} · {t.title}"))
+        return [row for row in rows if text in row[2].lower()]
 
     def noise(self) -> dict[str, Noise]:
         items: dict[str, Noise] = {}

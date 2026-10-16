@@ -36,6 +36,9 @@ def main(argv: list[str] | None = None) -> int:
     learn = sub.add_parser("learn", help="throwaway 'learn about X for Y' run; output becomes locked motivations")
     learn.add_argument("topic", nargs="+")
     sub.add_parser("later", help="list motivations; locked ones show their unlock date")
+    find = sub.add_parser("find", help="search every collection")
+    find.add_argument("query", nargs="*")
+    sub.add_parser("review", help="what got done, by day")
 
     args = parser.parse_args(argv)
     store = Store()
@@ -81,6 +84,15 @@ def main(argv: list[str] | None = None) -> int:
         for m in store.motivations():
             lock = f"locked until {m.unlock_at[:10]}" if m.locked() else "unlocked"
             print(m.id, f"[{lock}]", m.title, "·", m.why)
+    elif args.cmd == "find":
+        for kind, item_id, label in store.search(" ".join(args.query)):
+            print(f"{kind:5} {item_id} {label}")
+    elif args.cmd == "review":
+        from .store import local_time
+        for day, tasks in store.done_by_day().items():
+            print(f"{day}  {len(tasks)} done")
+            for t in tasks:
+                print(f"  {local_time(t.done_at)}  {t.title}")
     elif args.cmd == "watch":
         from .watch import watch
         import os
