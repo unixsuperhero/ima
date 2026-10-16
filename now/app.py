@@ -20,6 +20,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Input, Label, ListItem, ListView, RichLog, Static
 
 from . import engine
+from . import watch
 from .notify import notify
 from .store import Noise as NoiseItem
 from .store import Store, Task
@@ -412,6 +413,22 @@ class NowApp(App):
     def on_mount(self) -> None:
         active = self.store.active()
         self.push_screen(Now(self.store, active) if active else Picker(self.store))
+        session = os.environ.get("TUIOS_SESSION")
+        if os.environ.get("TUIOS_ENV") == "1" and session:
+            self.run_worker(self._watch(session, os.environ.get("TUIOS_PANE_ID")), group="watch")
+
+    async def _watch(self, session: str, own_window: str | None) -> None:
+        """Other panes in the session count as activity; their agents' states become noise."""
+        proc = await asyncio.create_subprocess_exec(*watch.subscribe_cmd(session), stdout=asyncio.subprocess.PIPE)
+        assert proc.stdout
+        async for raw in proc.stdout:
+            event = watch.parse(raw.decode(errors="replace"))
+            if event and watch.handle(self.store, event, own_window) == "noise":
+                screen = self.screen
+                if isinstance(screen, Picker):
+                    screen.refresh_rows(screen.query_one("#filter", Input).value)
+                elif isinstance(screen, Noise):
+                    screen.refresh_rows()
 
 
 def run() -> None:

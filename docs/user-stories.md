@@ -115,8 +115,6 @@ reply is already linked to the test task.
 
 ## Rough edges today
 
-- Activity from other panes still only counts through `now` CLI calls or `now touch`.
-  A tuios event subscription would make any keystroke in the session count.
 - There is no Review screen; the done count in the picker header is all there is.
 - Per-task theming is not built, so switching tasks does not change the colors.
 - No web UI yet.

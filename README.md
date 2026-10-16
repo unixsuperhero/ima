@@ -31,6 +31,7 @@ uv run now extract NOISE_ID "title"   # noise -> task, linked both ways
 uv run now drop NOISE_ID...           # discard noise
 uv run now poll                       # pull github and slack once (or: now poll github)
 uv run now poll --loop 120            # keep polling every 2 minutes
+uv run now watch                      # inside tuios: panes count as activity, agent states become noise
 ```
 
 ## Funnel
@@ -109,6 +110,10 @@ notification. Waiting on an agent is never a thing you do.
 ## Rules
 
 - Any keypress in the TUI, any `now` CLI command, or `now touch` from a hook counts as activity.
+  Inside tuios, a prompt or command in any pane of the session counts too: the TUI subscribes
+  to tuios events itself, and `now watch` does the same from a plain shell.
+- An agent in another pane reaching done, needs_input, or errored becomes noise
+  (`agent.done`, `agent.needs_input`, `agent.errored`) with a `tuios://session/window` ref.
 - No activity for 3 minutes puts the task back and opens the picker.
 - A gap of 1 to 3 minutes counts as a break.
 - 15 minutes active with zero breaks puts the task back and asks for a split.

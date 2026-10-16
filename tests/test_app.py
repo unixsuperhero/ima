@@ -10,6 +10,7 @@ from now.app import Noise, Now, NowApp, Picker
 from now.store import Store
 
 os.environ["NOW_NOTIFY"] = "0"
+os.environ.pop("TUIOS_ENV", None)  # never attach the tuios watcher in tests
 
 
 async def settle(pilot, app, n=3):

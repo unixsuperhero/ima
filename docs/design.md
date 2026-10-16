@@ -36,7 +36,7 @@ registered in h-mcp, never a Slack token held by this app;
 
 ```js
 source = 'cli' | 'clipboard' | 'pane'
-       | 'agent.response'
+       | 'agent.response' | 'agent.done' | 'agent.needs_input' | 'agent.errored'
        | 'slack.message' | 'slack.thread'
        | 'github.review_request' | 'github.pr_inbox'
        | 'github.ci_status' | 'github.pr_status'
@@ -72,5 +72,5 @@ repo) is the grouping that exists in practice, and a parent task groups subtasks
 
 ## Not yet built
 
-Learn-for-later runs (`now learn`), per-task theming, tuios event subscription
-for activity in other panes, a review screen, a web UI mirroring the TUI.
+Learn-for-later runs (`now learn`), per-task theming, a review screen, a web UI
+mirroring the TUI.

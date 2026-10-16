@@ -32,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     poll = sub.add_parser("poll", help="pull github/slack inboxes into noise")
     poll.add_argument("sources", nargs="*", default=["github", "slack"], choices=["github", "slack"])
     poll.add_argument("--loop", type=int, metavar="SECONDS", help="repeat forever at this interval")
+    sub.add_parser("watch", help="follow tuios events: panes count as activity, agent states become noise")
 
     args = parser.parse_args(argv)
     store = Store()
@@ -69,6 +70,13 @@ def main(argv: list[str] | None = None) -> int:
             if not args.loop:
                 break
             time.sleep(args.loop)
+    elif args.cmd == "watch":
+        from .watch import watch
+        import os
+        session = os.environ.get("TUIOS_SESSION")
+        if not session:
+            parser.error("not inside tuios (TUIOS_SESSION is unset)")
+        watch(store, session, os.environ.get("TUIOS_PANE_ID"))
     else:
         from .app import run as tui
         tui()
