@@ -26,6 +26,18 @@ Today `task`, `noise`, `run`, and `motivation` exist, stored as an append-only e
 `events.jsonl`. State is derived by replaying the log. See `now/store.py`.
 A task made by `extract` carries `from: noiseId`; the noise carries `task: taskId`.
 
+Pending task-entry text lives separately in `draft.json` as
+`{draft_id, revision, text, cwd}`. It survives restarts but is not yet a task
+collection. Applying validates the entire outline and publishes one `draft.apply`
+event containing every task and parent relationship. That event is also the
+retry receipt. Only then is the draft consumed; read recovers an interrupted
+cleanup without creating duplicate tasks. A new draft receives a new identity.
+
+`now/drafts.py` owns validation, revision conflicts, and application. A stable
+`store.lock` coordinates readers and writers across event-log replacement.
+Whole-batch publication avoids partial imports and per-task progress journals.
+Its cost is rewriting the log on apply, acceptable for the current local store.
+
 ## Funnel sources
 
 Noise arrives from these sources and is extracted into tasks. Each noise item

@@ -38,6 +38,33 @@ uv run now find alpha                 # search every collection
 uv run now review                     # done tasks by local day
 ```
 
+## Durable task drafts
+
+`now draft read --cwd /absolute/project/path` opens the app-owned pending draft as
+JSON. It returns `{draft_id, revision, text, cwd}`. The file is `draft.json` in the
+Now data directory, not an OS temporary directory. Reopening preserves its text
+and original working directory.
+
+`now draft save` accepts `{draft_id, revision, text}` as JSON on stdin and returns
+the saved draft. It rejects stale revisions without overwriting another edit.
+Saving a draft does not refresh the active task's activity clock.
+
+`now draft apply` accepts `{draft_id, revision, indent_size}` as JSON on stdin.
+It validates the entire saved outline and creates its tasks together. Plain
+lines, `- title`, and `- [ ] title` are accepted; indentation defines subtasks.
+Use `indent_size: 2` for two spaces per level. A leading `? ` makes a to-know
+task. Blank lines are ignored; tabs, indentation jumps, empty task markers, and
+checked boxes are rejected without consuming the draft. The final unformatted
+line is included.
+
+Successful application returns `{draft_id, revision, task_ids}` and consumes the
+draft. Retrying that same identity returns the same task IDs, even if a newer
+draft now exists. A fresh draft can intentionally create the same titles again.
+
+Draft files and batch commits use atomic replacement and durable filesystem
+flushes. Event writers share a lock; applying a batch rewrites the local event
+log. This storage implementation requires POSIX file locking.
+
 ## Theme
 
 The Now screen registers a Textual theme whose primary color is a hue derived from the
