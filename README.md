@@ -65,6 +65,68 @@ Draft files and batch commits use atomic replacement and durable filesystem
 flushes. Event writers share a lock; applying a batch rewrites the local event
 log. This storage implementation requires POSIX file locking.
 
+## Neovim task entry
+
+The plugin requires Neovim 0.10 or newer and a current Now CLI with the
+`draft` subcommands. The older standalone build predates this interface.
+
+For a local checkout, add this Lazy spec. Remove an older `enabled = false`
+entry if you want to enable it. This uses the checkout directly without needing
+a published GitHub revision:
+
+```lua
+{
+  "unixsuperhero/ima",
+  dir = vim.fn.expand("~/proj/now"),
+  main = "now",
+  cmd = { "Now", "NowApply" },
+  opts = {
+    command = { "uv", "run", "--project", vim.fn.expand("~/proj/now"), "now" },
+    indent_size = 2,
+    mappings = {
+      i = { submit = "<CR>", indent = "<Tab>", outdent = "<S-Tab>" },
+      n = { indent = "<Tab>", outdent = "<S-Tab>" },
+    },
+  },
+}
+```
+
+For installation from GitHub after publication, omit `dir` and use
+`command = { "now" }` with a current CLI on PATH. The Python CLI is a separate
+prerequisite; Lazy installs the Lua plugin, not Python dependencies.
+
+- `:Now` opens or returns to the task-entry buffer.
+- Enter formats the current row as `- [ ] title` and starts another draft line.
+  Mid-line Enter splits at the cursor. Empty nested Enter reduces indentation.
+- Tab indents a task and its descendants under the preceding sibling.
+  Shift-Tab outdents the subtree without adopting its former following siblings.
+- Native Vim editing, undo, and redo remain available. Hiding preserves the buffer.
+- `:NowApply` saves and applies the whole outline. Enter never creates real tasks.
+  There is no default apply key. Invalid input stays editable without partial tasks.
+- Each mapping accepts another key or `false`. Set `mappings = false` to use
+  native editing only. Lua actions are `open`, `submit`, `indent`, `outdent`,
+  `save`, and `apply` on `require("now")`. Maps are buffer-local.
+
+Autosaves run asynchronously and preserve cursor, focus, and undo history.
+The buffer's modified flag clears when its current text is acknowledged. Hide,
+close, and exit flush pending text. Failed saves preserve a separate
+`nvim-recovery-*.json` file in the same Now data directory; an abandoned session's
+copy is recovered on reopening. Errors name that path. A concurrent editing
+conflict retains both copies instead of choosing a winner silently.
+
+Applying temporarily freezes editing. If a response is lost after commit,
+`:NowApply` retries the original receipt, including after a restart. Do not
+manually paste an ambiguously applied recovery copy into a new draft; resolve
+its original receipt first. Recovery still requires writable storage. A forced
+process kill before an asynchronous save completes can lose the newest edit.
+
+Run the real-Neovim integration checks from the project root:
+
+```sh
+nvim --headless -u NONE -l tests/neovim_draft.lua
+nvim --headless -u NONE -l tests/neovim_persistence.lua
+```
+
 ## Theme
 
 The Now screen registers a Textual theme whose primary color is a hue derived from the
