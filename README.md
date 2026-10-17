@@ -91,9 +91,14 @@ a published GitHub revision:
 }
 ```
 
-For installation from GitHub after publication, omit `dir` and use
-`command = { "now" }` with a current CLI on PATH. The Python CLI is a separate
-prerequisite; Lazy installs the Lua plugin, not Python dependencies.
+For installation from GitHub, omit `dir`. Keep the `uv run --project` command
+above when using the local CLI checkout, or use `command = { "now" }` if a current
+CLI is on PATH. Lazy installs the Lua plugin, not Python dependencies.
+
+If `:Now` is unavailable, remove `enabled = false` from the spec, include both
+`Now` and `NowApply` in `cmd`, and update the installed plugin with `:Lazy update ima`.
+Restart Neovim after changing its plugin spec; an already-running editor retains
+the old command registrations.
 
 - `:Now` opens or returns to the task-entry buffer.
 - Enter formats the current row as `- [ ] title` and starts another draft line.
