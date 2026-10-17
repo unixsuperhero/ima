@@ -2,10 +2,41 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 
 from .store import Store
+
+
+def draft_command(args: argparse.Namespace) -> int:
+    from .drafts import Drafts
+
+    try:
+        store = Store()
+        drafts = Drafts(store)
+        if args.draft_cmd == "read":
+            result = drafts.read(args.cwd)
+        else:
+            payload = json.load(sys.stdin)
+            if not isinstance(payload, dict):
+                raise ValueError("stdin must contain a JSON object")
+            required = ("draft_id", "revision", "text" if args.draft_cmd == "save" else "indent_size")
+            missing = [key for key in required if key not in payload]
+            if missing:
+                raise ValueError("Missing JSON fields: " + ", ".join(missing))
+            if args.draft_cmd == "save":
+                result = drafts.save(payload["draft_id"], payload["revision"], payload["text"])
+            else:
+                result = drafts.apply(payload["draft_id"], payload["revision"], payload["indent_size"])
+        if args.draft_cmd != "save":
+            store.touch()
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except (ValueError, OSError) as exc:
+        print(f"now draft {args.draft_cmd}: {exc}", file=sys.stderr)
+        return 1
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,7 +71,17 @@ def main(argv: list[str] | None = None) -> int:
     find.add_argument("query", nargs="*")
     sub.add_parser("review", help="what got done, by day")
 
+    draft = sub.add_parser("draft", help="read, save, or apply the durable task-entry draft")
+    draft_sub = draft.add_subparsers(dest="draft_cmd", required=True)
+    draft_read = draft_sub.add_parser("read", help="open the pending draft as JSON")
+    draft_read.add_argument("--cwd", required=True, help="absolute working directory for a new draft")
+    draft_sub.add_parser("save", help="save JSON from stdin without recording activity")
+    draft_sub.add_parser("apply", help="apply the saved outline using JSON from stdin")
+
+
     args = parser.parse_args(argv)
+    if args.cmd == "draft":
+        return draft_command(args)
     store = Store()
     store.touch()  # any now command is activity for the active task
 

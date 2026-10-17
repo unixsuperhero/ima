@@ -6,6 +6,7 @@ Events (one JSON object per line):
   {"at": iso, "type": "task.unset",    "id": str, "reason": "idle"|"overrun"|"manual"}
   {"at": iso, "type": "task.done",     "id": str}
   {"at": iso, "type": "task.context",  "id": str, "cwd": str}
+  {"at": iso, "type": "draft.apply", "id": "draft_id:revision", "tasks": [{"id": str, "title": str, "parent": str|None, "kind": str, "cwd": str}]}
   {"at": iso, "type": "noise.add",     "id": str, "key": str, "source": str, "ref": str|None, "body": str, "task": str|None}
   {"at": iso, "type": "noise.done",    "id": str, "task": str|None}
   {"at": iso, "type": "run.start",     "id": str, "task": str, "kind": "command"|"prompt", "text": str, "cwd": str}
@@ -18,10 +19,13 @@ Noise is raw input from a funnel source. `key` dedups re-polled items.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import secrets
+import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +50,30 @@ def data_dir() -> Path:
         return Path(home)
     xdg = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(xdg) / "now"
+
+
+def sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_write(path: Path, text: str) -> None:
+    """Publish complete contents, then persist the directory entry."""
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
 
 
 @dataclass
@@ -110,23 +138,68 @@ class Store:
         self.activity_path = self.root / "activity"
 
     # -- events -----------------------------------------------------------
+    @contextmanager
+    def locked(self, *, shared: bool = False):
+        with (self.root / "store.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
     def append(self, event: dict) -> dict:
         event = {"at": now_iso(), **event}
-        with self.events_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        with self.locked():
+            with self.events_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            sync_directory(self.root)
         return event
 
     def events(self) -> list[dict]:
+        with self.locked(shared=True):
+            return self._events_unlocked()
+
+    def _events_unlocked(self) -> list[dict]:
         if not self.events_path.exists():
             return []
         with self.events_path.open(encoding="utf-8") as f:
-            return [json.loads(line) for line in f if line.strip()]
+            events = []
+            for number, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError as exc:
+                    raise ValueError(f"Corrupt event log {self.events_path}, line {number}; "
+                                     "restore or repair it before continuing") from exc
+                if not isinstance(event, dict) or not all(k in event for k in ("type", "id", "at")):
+                    raise ValueError(f"Invalid event in {self.events_path}, line {number}")
+                if event["type"] == "draft.apply":
+                    items = event.get("tasks")
+                    if (not isinstance(items, list) or not items or any(
+                        not isinstance(item, dict)
+                        or not all(isinstance(item.get(key), str) for key in ("id", "title", "kind", "cwd"))
+                        or item["kind"] not in ("do", "know")
+                        or "parent" not in item
+                        or (item["parent"] is not None and not isinstance(item["parent"], str))
+                        for item in items
+                    )):
+                        raise ValueError(f"Invalid draft batch in {self.events_path}, line {number}")
+                events.append(event)
+            return events
 
     # -- derived state ----------------------------------------------------
     def tasks(self) -> dict[str, Task]:
         tasks: dict[str, Task] = {}
         for e in self.events():
             t = e["type"]
+            if t == "draft.apply":
+                for item in e["tasks"]:
+                    tasks[item["id"]] = Task(item["id"], item["title"], item["parent"], e["at"],
+                                             kind=item["kind"], cwd=item["cwd"])
+                continue
             if t == "task.add":
                 tasks[e["id"]] = Task(e["id"], e["title"], e.get("parent"), e["at"],
                                       from_noise=e.get("from"), kind=e.get("kind", "do"))
