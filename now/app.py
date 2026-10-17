@@ -16,16 +16,16 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import CommandPalette
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.theme import Theme
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, Input, Label, ListItem, ListView, RichLog, Static
+from textual.widgets import Button, Footer, Input, Label, ListItem, ListView, RichLog, Static, TextArea
 
-from . import engine
+from . import agents, engine
 from . import learn, watch
 from .notify import notify
 from .store import Noise as NoiseItem
-from .store import Motivation, Store, Task, local_time
+from .store import Motivation, Run, Store, Task, local_time
 
 
 class NavigationCommandPalette(CommandPalette):
@@ -65,6 +65,7 @@ class Picker(ListScreen):
         Binding("n", "noise", "Noise"),
         Binding("l", "later", "Later"),
         Binding("v", "review", "Review"),
+        Binding("g", "agents", "Agents"),
         Binding("f", "app.find", "Find"),
     ]
 
@@ -136,6 +137,8 @@ class Picker(ListScreen):
 
     def action_review(self) -> None:
         self.app.switch_screen(Review(self.store))
+    def action_agents(self) -> None:
+        self.app.push_screen(Agents(self.store))
 
     def on_screen_resume(self) -> None:
         self.app.theme = "textual-dark"
@@ -170,6 +173,271 @@ class TextPrompt(ModalScreen[str | None]):
 
     def key_escape(self) -> None:
         self.dismiss(None)
+
+
+
+class AgentLauncher(ModalScreen[Run | None]):
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+enter", "launch", "Launch", priority=True),
+    ]
+
+    def __init__(self, store: Store, task: Task, cwd: str):
+        super().__init__()
+        self.store, self.task_id = store, task.id
+        self.task_title, self.cwd = task.title, cwd
+        self.launching = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="agent-launcher"):
+            yield Label(f"Persistent agent · {self.task_title}", markup=False)
+            yield Static(f"Working directory: {self.cwd}", markup=False)
+            yield Label("Command (quoted arguments allowed; not a shell expression)")
+            yield Input(os.environ.get("NOW_AGENT_SESSION_CMD", "claude"), id="agent-command")
+            yield Label("Prompt · Enter: newline · Ctrl+Enter: launch")
+            yield TextArea(id="agent-prompt")
+            yield Static("Runs in tuios after Now exits. :ask is one-shot and owned by Now.", id="agent-error", markup=False)
+            with Horizontal(classes="agent-buttons"):
+                yield Button("Launch", id="agent-launch", variant="primary")
+                yield Button("Cancel", id="agent-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#agent-prompt", TextArea).focus()
+
+    @on(Button.Pressed, "#agent-launch")
+    def action_launch(self) -> None:
+        if self.launching:
+            return
+        self.launching = True
+        command = self.query_one("#agent-command", Input).value
+        prompt = self.query_one("#agent-prompt", TextArea).text
+        self.query_one("#agent-launch", Button).disabled = True
+        self.query_one("#agent-error", Static).update("Starting native pane…")
+        self.app.run_worker(self._launch(command, prompt), group="agent-launch", exclusive=False)
+
+    async def _launch(self, command: str, prompt: str) -> None:
+        try:
+            run = await asyncio.to_thread(agents.launch, self.store, self.task_id, command, prompt, self.cwd)
+        except Exception as error:
+            if self.is_mounted:
+                self.query_one("#agent-error", Static).update(str(error))
+                self.query_one("#agent-launch", Button).disabled = False
+                self.launching = False
+            return
+        self.app.notify(f"Agent {run.agent_state or 'starting'} · g: agents · Enter: details · o: open pane")
+        if self.is_mounted and self.app.screen is self:
+            self.dismiss(run)
+
+    @on(Button.Pressed, "#agent-cancel")
+    def action_cancel(self) -> None:
+        if self.launching:
+            self.app.notify("Launch already submitted; inspect it with g → Enter.")
+        self.dismiss(None)
+
+
+class Agents(ListScreen):
+    BINDINGS = [
+        Binding("escape,q", "back", "Back"),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+    ]
+
+    def __init__(self, store: Store, task_id: str | None = None):
+        super().__init__()
+        self.store, self.task_id = store, task_id
+        self.rows: list[Run] = []
+        self.labels: dict[str, str] = {}
+        self.polling = False
+
+    def compose(self) -> ComposeResult:
+        yield Static("Loading agents…", id="count", markup=False)
+        yield ListView(id="rows")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#rows", ListView).focus()
+        self.set_interval(2, self.poll)
+        self.poll()
+
+    def on_screen_resume(self) -> None:
+        self.poll()
+
+    def poll(self) -> None:
+        if not self.polling and self.app.screen is self:
+            self.polling = True
+            self.run_worker(self._refresh(), group="agent-poll")
+
+    async def _refresh(self) -> None:
+        try:
+            runs = await asyncio.to_thread(agents.refresh, self.store, self.task_id)
+            tasks = await asyncio.to_thread(self.store.tasks)
+            if self.app.screen is not self:
+                return
+            lv = self.query_one("#rows", ListView)
+            selected = self.rows[lv.index].id if self.rows and lv.index is not None else None
+            scroll = lv.scroll_offset
+            known = {r.id for r in self.rows}
+            incoming = {r.id for r in runs}
+            for r in self.rows:
+                if r.id not in incoming:
+                    await self.query_one(f"#agent-{r.id}", ListItem).remove()
+                    self.labels.pop(r.id, None)
+            for run in runs:
+                title = tasks[run.task].title if run.task in tasks else run.task
+                label = (f"[{run.agent_state or 'unknown'}] {run.agent_command or ''}"
+                         f" · {title} · {run.text}").replace("\n", " ")
+                if run.id not in known:
+                    await lv.append(ListItem(Label(label, markup=False), id=f"agent-{run.id}"))
+                elif self.labels.get(run.id) != label:
+                    self.query_one(f"#agent-{run.id} Label", Label).update(label)
+                self.labels[run.id] = label
+            # Existing rows retain their widgets and order; new runs append.
+            by_id = {r.id: r for r in runs}
+            self.rows = [by_id[item.id.removeprefix("agent-")] for item in lv.children]
+            ids = [r.id for r in self.rows]
+            index = ids.index(selected) if selected in ids else (0 if ids else None)
+            if lv.index != index:
+                lv.index = index
+            lv.scroll_to(scroll.x, scroll.y, animate=False, force=True)
+            scope = tasks[self.task_id].title if self.task_id in tasks else "All tasks"
+            heading = f"{scope} · {len(runs)} persistent agents · Enter: details · Esc: back"
+            count = self.query_one("#count", Static)
+            if str(count.content) != heading:
+                count.update(heading)
+        except Exception as error:
+            if self.is_mounted and self.app.screen is self:
+                self.query_one("#count", Static).update(f"Agents unavailable: {error}")
+        finally:
+            self.polling = False
+
+    @on(ListView.Selected, "#rows")
+    def selected(self, event: ListView.Selected) -> None:
+        if event.list_view.index is not None and self.rows:
+            self.app.push_screen(AgentDetail(self.store, self.rows[event.list_view.index]))
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+
+class StopAgent(ModalScreen[bool]):
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, run: Run):
+        super().__init__()
+        self.run = run
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="agent-stop-dialog"):
+            yield Static(f"Stop agent {self.run.id}?\nCloses only its recorded tuios pane. Unsaved work in that pane may be lost.", markup=False)
+            with Horizontal(classes="agent-buttons"):
+                yield Button("Cancel", id="stop-cancel")
+                yield Button("Stop agent", id="stop-confirm", variant="error")
+
+    def on_mount(self) -> None:
+        self.query_one("#stop-cancel", Button).focus()
+
+    @on(Button.Pressed, "#stop-confirm")
+    def confirm(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#stop-cancel")
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class AgentDetail(Screen):
+    BINDINGS = [
+        Binding("escape,q", "back", "Back"),
+        Binding("o", "open", "Open native pane"),
+        Binding("x", "stop", "Stop agent"),
+    ]
+
+    def __init__(self, store: Store, run: Run):
+        super().__init__()
+        self.store, self.run = store, run
+        self.polling = False
+        self.operating = False
+        self.output: str | None = None
+        self.heading: str | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="agent-status", markup=False)
+        with VerticalScroll(id="agent-context"):
+            yield Static(f"Command: {self.run.agent_command}\nWorking directory: {self.run.cwd}\nOriginal prompt:\n{self.run.text}", markup=False)
+        yield Static("Live pane / last saved snapshot. Approvals and follow-up prompts belong in the native pane.", classes="agent-hint")
+        with VerticalScroll(id="agent-transcript"):
+            yield Static("Loading transcript…", id="agent-output", markup=False)
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#agent-transcript", VerticalScroll).focus()
+        self.set_interval(2, self.poll)
+        self.poll()
+
+    def on_screen_resume(self) -> None:
+        self.poll()
+
+    def poll(self) -> None:
+        if not self.polling and not self.operating and self.app.screen is self:
+            self.polling = True
+            self.run_worker(self._refresh(), group="agent-detail-poll")
+
+    async def _refresh(self) -> None:
+        try:
+            runs = await asyncio.to_thread(agents.refresh, self.store, self.run.task)
+            run = next((r for r in runs if r.id == self.run.id), self.run)
+            output = await asyncio.to_thread(agents.transcript, self.store, run.id)
+            tasks = await asyncio.to_thread(self.store.tasks)
+            if self.app.screen is not self:
+                return
+            self.run = run
+            title = tasks[run.task].title if run.task in tasks else run.task
+            heading = (f"{title} · agent {run.id} · {run.agent_state or 'unknown'}"
+                       f" · prompt: {run.prompt_status or 'unknown'}"
+                       f"\nPane: {run.agent_session}/{run.agent_window} · o: open · x: stop")
+            if heading != self.heading:
+                self.query_one("#agent-status", Static).update(heading)
+                self.heading = heading
+            if output != self.output:
+                transcript = self.query_one("#agent-transcript", VerticalScroll)
+                scroll = transcript.scroll_offset
+                self.query_one("#agent-output", Static).update(output or "(No transcript captured yet.)")
+                transcript.scroll_to(scroll.x, scroll.y, animate=False, force=True)
+                self.output = output
+        except Exception as error:
+            if self.is_mounted and self.app.screen is self:
+                self.query_one("#agent-status", Static).update(f"Agent unavailable: {error}")
+                self.heading = None
+        finally:
+            self.polling = False
+
+    def action_open(self) -> None:
+        if not self.operating:
+            self.operating = True
+            self.run_worker(self._operate(False), group="agent-operation")
+
+    def action_stop(self) -> None:
+        if not self.operating:
+            self.app.push_screen(StopAgent(self.run), self._confirm_stop)
+
+    def _confirm_stop(self, confirmed: bool) -> None:
+        if confirmed:
+            self.operating = True
+            self.run_worker(self._operate(True), group="agent-operation")
+
+    async def _operate(self, stop: bool) -> None:
+        try:
+            await asyncio.to_thread(agents.stop if stop else agents.open_pane, self.store, self.run.id)
+            self.app.notify("Agent stopped" if stop else "Opened native agent pane")
+        except Exception as error:
+            self.app.notify(str(error), severity="error")
+        finally:
+            self.operating = False
+            if self.is_mounted:
+                self.poll()
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
 
 
 class Noise(ListScreen):
@@ -236,7 +504,10 @@ class Noise(ListScreen):
     def action_open_ref(self) -> None:
         n = self.current()
         if n and n.ref:
-            subprocess.Popen(["open", n.ref], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if n.ref.startswith("run:"):
+                self.app.selected(("run", n.ref.split()[0].removeprefix("run:")))
+            else:
+                subprocess.Popen(["open", n.ref], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 class Later(ListScreen):
@@ -370,7 +641,7 @@ class Selector(ModalScreen[tuple[str, str] | None]):
             lv.append(ListItem(Label(f"{kind:5} {label}")))
         lv.index = 0 if self.rows else None
         self.query_one("#hint", Static).update(
-            f"{len(self.rows)} matches · Enter: task→go, noise→extract, later→promote, run→open log, done→show")
+            f"{len(self.rows)} matches · Enter: task→go, noise→extract, later→promote, run→details/log, done→show")
 
     @on(Input.Changed, "#query")
     def changed(self, event: Input.Changed) -> None:
@@ -414,7 +685,7 @@ class Now(Screen):
 
     Command line (vim style):
       :!CMD        run a shell command in the task's cwd, output captured to the run log
-      :ask PROMPT  send a prompt to the agent (NOW_AGENT_CMD, default `claude -p`)
+      :ask PROMPT  one-shot prompt owned by Now (NOW_AGENT_CMD, default `claude -p`)
       :learn TOPIC throwaway run; the answer becomes locked motivations for later
       :add TITLE   add a child task
       :cd PATH     set the task's working directory
@@ -427,6 +698,8 @@ class Now(Screen):
         Binding("u", "unset", "Put back"),
         Binding("colon", "command", ":"),
         Binding("n", "noise", "Noise"),
+        Binding("a", "launch_agent", "Launch agent"),
+        Binding("g", "agents", "Agents"),
         Binding("escape", "hide_command", "Esc", show=False),
     ]
 
@@ -454,7 +727,8 @@ class Now(Screen):
         self.refresh_children()
         log = self.query_one("#log", RichLog)
         for r in self.store.runs(self.item.id)[-5:]:
-            log.write(f"$ {r.text}  [{'running' if r.exit is None else f'exit {r.exit}'}]")
+            state = r.agent_state or "unknown" if r.kind == "agent" else ("running" if r.exit is None else f"exit {r.exit}")
+            log.write(f"$ {r.text}  [{state}]")
         self.set_interval(1, self.tick)
         self.tick()
 
@@ -469,6 +743,8 @@ class Now(Screen):
 
     # -- timers -------------------------------------------------------------
     def tick(self) -> None:
+        if self.app.screen is not self:
+            return
         now = time.time()
         verdict = engine.tick(self.session, now, self.store.last_activity())
         s = self.session
@@ -499,6 +775,17 @@ class Now(Screen):
 
     def action_noise(self) -> None:
         self.app.switch_screen(Noise(self.store))
+
+    def action_launch_agent(self) -> None:
+        def launched(run: Run | None) -> None:
+            if run and self.is_mounted:
+                self.query_one("#log", RichLog).write(
+                    f"Agent {run.id}: {run.agent_state or 'starting'} · g → Enter → o: open native pane")
+
+        self.app.push_screen(AgentLauncher(self.store, self.item, self.cwd()), launched)
+
+    def action_agents(self) -> None:
+        self.app.push_screen(Agents(self.store, self.item.id))
 
     def action_split(self) -> None:
         def after(piece: str | None) -> None:
@@ -615,6 +902,18 @@ class NowApp(App):
     #find ListView { height: 1fr; }
     #hint { color: $text-muted; }
     .day { text-style: bold; color: $primary; }
+    AgentLauncher, StopAgent { align: center middle; }
+    #agent-launcher { padding: 1 2; border: thick $primary; background: $surface; width: 90%; height: 90%; }
+    #agent-prompt { height: 1fr; min-height: 3; }
+    #agent-error { height: auto; max-height: 4; color: $text-muted; }
+    .agent-buttons { height: 3; margin-top: 1; }
+    .agent-buttons Button { margin-right: 2; }
+    #agent-stop-dialog { padding: 1 2; border: thick $warning; background: $surface; width: 80%; height: auto; }
+    #agent-status { padding: 1 2; color: $primary; }
+    #agent-context { height: auto; max-height: 9; margin: 0 2; }
+    .agent-hint { padding: 1 2; color: $text-muted; }
+    #agent-transcript { height: 1fr; margin: 0 2; border: round $surface-lighten-2; }
+    #agent-output { height: auto; }
     """
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit", priority=True),
@@ -624,6 +923,11 @@ class NowApp(App):
     def __init__(self, store: Store | None = None):
         super().__init__()
         self.store = store or Store()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action in {"find", "command_palette"} and isinstance(self.screen, (AgentLauncher, StopAgent)):
+            return False
+        return super().check_action(action, parameters)
 
     def on_key(self) -> None:
         self.store.touch()
@@ -665,7 +969,11 @@ class NowApp(App):
                 self.store.promote(m.id)
                 self.notify(f"Promoted: {m.title}")
         elif kind == "run":
-            subprocess.Popen(["open", str(self.store.run_log(item_id))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run = next((run for run in self.store.runs() if run.id == item_id), None)
+            if run and run.kind == "agent":
+                self.push_screen(AgentDetail(self.store, run))
+            else:
+                subprocess.Popen(["open", str(self.store.run_log(item_id))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif kind == "done":
             self.switch_screen(Review(self.store))
 

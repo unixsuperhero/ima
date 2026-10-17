@@ -179,11 +179,17 @@ single letters in normal mode. Every key anywhere counts as activity.
 | Picker | l | later screen: motivations from learn runs |
 | Picker | v | review screen: what got done, by day |
 | Picker | f | find: one search over every collection |
+| Picker | g | all persistent agents, labelled by originating task |
 | Now | d | done, back to picker |
 | Now | s | split: name the smallest piece, it becomes the active task |
 | Now | u | put the task back |
 | Now | n | noise screen |
 | Now | : | command line (below) |
+| Now | a | launch a persistent agent with this task and working directory |
+| Now | g | agents launched for this task |
+| Agent launcher | Enter / ctrl+Enter | newline in the prompt / launch; Tab reaches Launch and Cancel |
+| Agents | j k, Enter | move, inspect selected agent |
+| Agent detail | o / x / Esc | open native pane / confirm stop / back |
 | Noise | j k | move |
 | Noise | e, Enter | extract into a task (title prefilled from the first line) |
 | Noise | x | drop |
@@ -198,7 +204,8 @@ single letters in normal mode. Every key anywhere counts as activity.
 | any | ctrl+q | quit |
 
 Find acts on what you pick: a task is activated, noise opens the extract prompt, an
-unlocked motivation is promoted, a run opens its log, a done task opens Review.
+unlocked motivation is promoted, a command/prompt run opens its log, an agent opens
+its detail screen, and a done task opens Review.
 
 ## Command line
 
@@ -219,6 +226,37 @@ If you are still on the task when an agent reply finishes, it is shown in the lo
 have moved on, the reply becomes noise (`agent.response`) linked to the task, and you get a
 notification. Waiting on an agent is never a thing you do.
 
+These one-shot runs are owned by the current TUI process. Switching tasks is supported;
+quitting Now is not a durable background-run workflow. Use the persistent launcher
+for work that must continue after the TUI closes.
+
+## Persistent agents
+
+On an active task, press `a`, enter a prompt, and launch. The command defaults to
+`NOW_AGENT_SESSION_CMD` or `claude`; use an interactive agent CLI, not its one-shot
+print mode. The command is split into arguments, not evaluated by a shell. The
+task and its working directory are fixed when the dialog opens.
+
+This requires `tuios` and an installed, authenticated agent CLI. Now starts an
+unfocused native agent pane in the current `TUIOS_SESSION`, or a dedicated
+`now-agents` session outside tuios. `TUIOS_SERVER` is respected. The pane inherits
+`NOW_HOME`, `NOW_TASK`, and `NOW_RUN`; it remains alive when you switch tasks or
+quit/reopen Now. No new worktree or custom agent daemon is created.
+Outside tuios, attach to `tuios attach now-agents` in another terminal to interact
+with the pane; `o` changes native focus but does not open a terminal application.
+
+Press `g` to inspect agents. `o` focuses the native pane, where you handle trust,
+login, approvals, and follow-up prompts yourself. If startup cannot submit the
+prompt, the original prompt remains visible; Now does not silently retry it.
+`x` asks before closing that agent pane. A `done` state means a turn completed,
+not that the interactive agent exited. An unreachable session is `unknown`.
+
+The detail view captures a bounded tail of native pane output and saves the latest
+snapshot in `runs/<id>.log`. This is not a complete transcript archive while Now
+is closed. Refreshes preserve selection and reading position and do not count as
+activity. Agent attention states remain linked to the originating task, even
+after you move on.
+
 ## Rules
 
 - Any keypress in the TUI, any user-facing `now` CLI command, or `now touch` counts as activity.
@@ -226,7 +264,10 @@ notification. Waiting on an agent is never a thing you do.
   Inside tuios, a prompt or command in any pane of the session counts too: the TUI subscribes
   to tuios events itself, and `now watch` does the same from a plain shell.
 - An agent in another pane reaching done, needs_input, or errored becomes noise
-  (`agent.done`, `agent.needs_input`, `agent.errored`) with a `tuios://session/window` ref.
+  (`agent.done`, `agent.needs_input`, `agent.errored`). Unowned panes have a
+  `tuios://session/window` ref. App-launched agents retain their originating task
+  and run/pane reference; `o` on their Noise row opens agent detail. Observed
+  transitions are deduplicated between the live watcher and status refresh.
 - No activity for 3 minutes puts the task back and opens the picker.
 - A gap of 1 to 3 minutes counts as a break.
 - 15 minutes active with zero breaks puts the task back and asks for a split.

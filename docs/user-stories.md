@@ -147,6 +147,23 @@ picker offers `Check recovery`, the unfinished leaf. A malformed outline stays
 in the editor for correction. If the apply response is lost, retrying uses the
 original receipt instead of adding the tasks twice.
 
+## 10. Letting an agent work while I move on
+
+On `fix flaky login test`, I press `a`. The dialog already knows the task and
+repository. I type a multiline prompt and launch the configured interactive
+agent. Its native tuios pane opens without taking focus. I put the task back
+and work on something else; I can also quit Now without ending the agent.
+
+When I return, `g` in the picker lists the agents with their originating tasks.
+Enter shows status, the original prompt, and recent pane output. A completed
+turn or request for input becomes noise linked to the original test task.
+`o` takes me to the agent pane to answer it. `x` asks before stopping that pane.
+If a provider needs login or trust approval during startup, I handle it there;
+Now does not approve for me or silently send the initial prompt twice.
+
+The saved output is the latest bounded snapshot, not an archive of everything
+the agent printed while Now was closed.
+
 ## Rough edges today
 
 - No web UI yet.

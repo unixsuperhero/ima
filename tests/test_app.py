@@ -268,3 +268,134 @@ class ListNavigationTest(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("enter")
                 await pilot.pause()
                 self.assertEqual([t.title for t in store.pickable()], ["second noise"])
+
+
+class PersistentAgentUITest(unittest.IsolatedAsyncioTestCase):
+    async def test_launcher_preserves_multiline_errors_and_opening_context(self):
+        from now.app import AgentLauncher
+        from textual.widgets import Static, TextArea
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            task = store.add("original task")
+            store.set_cwd(task.id, tmp)
+            store.activate(task.id)
+            app = NowApp(store)
+
+            def launch(store, task_id, command, prompt, cwd):
+                run = store.run_start(task_id, "agent", prompt, cwd)
+                store.agent_update(run.id, agent_command=command, agent_state="starting")
+                return store.runs(task_id)[-1]
+
+            with unittest.mock.patch("now.app.agents.launch", side_effect=ValueError("invalid command")) as native:
+                async with app.run_test(size=(100, 35)) as pilot:
+                    await pilot.press("a")
+                    await pilot.pause()
+                    launcher = app.screen
+                    self.assertIsInstance(launcher, AgentLauncher)
+                    await pilot.press(*"first", "enter", *"second agx")
+                    prompt = launcher.query_one("#agent-prompt", TextArea)
+                    self.assertEqual(prompt.text, "first\nsecond agx")
+                    await pilot.press("ctrl+f", "ctrl+shift+p")
+                    self.assertIs(app.screen, launcher)
+                    self.assertIs(app.focused, prompt)
+                    command = launcher.query_one("#agent-command", Input)
+                    command.value = 'claude --model "model with spaces"'
+                    store.set_cwd(task.id, "/")
+                    await pilot.press("ctrl+enter")
+                    await settle(pilot, app)
+                    self.assertIs(app.screen, launcher)
+                    self.assertEqual(prompt.text, "first\nsecond agx")
+                    self.assertEqual(command.value, 'claude --model "model with spaces"')
+                    self.assertIn("invalid command", str(launcher.query_one("#agent-error", Static).content))
+                    native.side_effect = launch
+                    await pilot.click("#agent-launch")
+                    await settle(pilot, app)
+                    self.assertIsInstance(app.screen, Now)
+                    run = store.runs(task.id)[0]
+                    self.assertEqual((run.task, run.cwd, run.text), (task.id, tmp, "first\nsecond agx"))
+                    self.assertEqual(store.active().id, task.id)
+
+    async def test_poll_preserves_navigation_scroll_modal_and_activity(self):
+        from now.app import AgentDetail, Agents, StopAgent
+        from textual.containers import VerticalScroll
+        from textual.widgets import Static
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            task = store.add("origin")
+            other = store.add("other task")
+            store.activate(task.id)
+            for i in range(18):
+                run = store.run_start(task.id, "agent", f"prompt {i}", tmp)
+                store.agent_update(run.id, agent_command="claude", agent_state="working")
+            foreign = store.run_start(other.id, "agent", "another task", tmp)
+            store.agent_update(foreign.id, agent_state="idle")
+            output = "\n".join(f"plain [bold] line {i}" for i in range(100))
+            app = NowApp(store)
+            with (unittest.mock.patch("now.app.agents.refresh", side_effect=lambda store, task=None: store.runs(task)),
+                  unittest.mock.patch("now.app.agents.transcript", return_value=output) as transcript,
+                  unittest.mock.patch("now.app.agents.stop") as stop):
+                async with app.run_test(size=(100, 30)) as pilot:
+                    await pilot.press("g")
+                    await settle(pilot, app)
+                    screen = app.screen
+                    self.assertIsInstance(screen, Agents)
+                    self.assertEqual(len(screen.rows), 18)
+                    await pilot.press("ctrl+n", "ctrl+n", "ctrl+p", "j", "k")
+                    rows = screen.query_one(ListView)
+                    self.assertEqual(rows.index, 1)
+                    selected = screen.rows[1].id
+                    widget = screen.query_one(f"#agent-{selected}")
+                    activity = store.last_activity()
+                    store.agent_update(selected, agent_state="needs_input")
+                    await screen._refresh()
+                    self.assertEqual(store.last_activity(), activity)
+                    self.assertEqual(screen.rows[rows.index].id, selected)
+                    self.assertIs(screen.query_one(f"#agent-{selected}"), widget)
+                    self.assertIs(app.focused, rows)
+                    await pilot.press("enter")
+                    await settle(pilot, app)
+                    detail = app.screen
+                    self.assertIsInstance(detail, AgentDetail)
+                    self.assertEqual(detail.run.id, selected)
+                    viewport = detail.query_one("#agent-transcript", VerticalScroll)
+                    viewport.scroll_to(y=12, animate=False, force=True)
+                    await pilot.pause()
+                    offset = viewport.scroll_offset
+                    transcript.return_value = output + "\nnew output"
+                    await detail._refresh()
+                    await pilot.pause()
+                    self.assertEqual(viewport.scroll_offset, offset)
+                    self.assertIn("[bold]", str(detail.query_one("#agent-output", Static).content))
+                    await pilot.press("x")
+                    await pilot.pause()
+                    modal = app.screen
+                    self.assertIsInstance(modal, StopAgent)
+                    focused = app.focused
+                    transcript.return_value += "\nheld while modal open"
+                    await detail._refresh()
+                    await pilot.press("ctrl+n", "ctrl+p")
+                    self.assertIs(app.screen, modal)
+                    self.assertIs(app.focused, focused)
+                    self.assertEqual(rows.index, 1)
+                    self.assertNotIn("held while modal", detail.output)
+                    await pilot.press("enter")  # Cancel is the default, never Stop.
+                    await pilot.pause()
+                    stop.assert_not_called()
+                    await pilot.press("x")
+                    await pilot.pause()
+                    await pilot.click("#stop-confirm")
+                    await settle(pilot, app)
+                    stop.assert_called_once_with(store, selected)
+                    await pilot.press("escape", "escape", "u")
+                    await pilot.pause()
+                    self.assertIsInstance(app.screen, Picker)
+                    await pilot.press("g")  # Filter input must receive this letter.
+                    self.assertIsInstance(app.screen, Picker)
+                    self.assertEqual(app.screen.query_one(Input).value, "g")
+                    await pilot.press("escape", "g")
+                    await settle(pilot, app)
+                    self.assertIsInstance(app.screen, Agents)
+                    self.assertIn(foreign.id, [run.id for run in app.screen.rows])
+
