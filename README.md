@@ -221,7 +221,8 @@ notification. Waiting on an agent is never a thing you do.
 
 ## Rules
 
-- Any keypress in the TUI, any `now` CLI command, or `now touch` from a hook counts as activity.
+- Any keypress in the TUI, any user-facing `now` CLI command, or `now touch` counts as activity.
+  Background `now draft save` calls do not count as activity.
   Inside tuios, a prompt or command in any pane of the session counts too: the TUI subscribes
   to tuios events itself, and `now watch` does the same from a plain shell.
 - An agent in another pane reaching done, needs_input, or errored becomes noise
@@ -241,3 +242,5 @@ notification. Waiting on an agent is never a thing you do.
 - [Design: levels, data model, funnel](docs/design.md)
 - [User stories](docs/user-stories.md)
 - [Thinktank shared conventions](file:///Users/unixsuperhero/proj/thinktank/docs/shared-conventions.md)
+- [Owner goals](file:///Users/unixsuperhero/notes/ima/iwants.md)
+- [Known unfinished work](file:///Users/unixsuperhero/notes/ima/unfinished-work.md)

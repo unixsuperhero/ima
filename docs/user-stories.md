@@ -135,6 +135,18 @@ handling for a tui`. The run finishes in the log: `[5 motivations locked until 2
 I never read them today. Next week `l` in the picker shows them unlocked, and `p` turns the
 one I still care about into a task. The other four get `x`.
 
+## 9. Capturing a nested task list in Neovim
+
+I run `:Now` and type `Ship the change`, Enter, Tab, `Check recovery`. The first
+line becomes a task marker; the second is a pending subtask. Neither is a real
+Now task yet. I close Neovim and return later. The app-owned draft still has
+both lines and the original working directory.
+
+`:NowApply` creates both tasks together and clears the consumed draft. The
+picker offers `Check recovery`, the unfinished leaf. A malformed outline stays
+in the editor for correction. If the apply response is lost, retrying uses the
+original receipt instead of adding the tasks twice.
+
 ## Rough edges today
 
 - No web UI yet.

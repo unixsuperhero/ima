@@ -72,7 +72,11 @@ local function recover(s, synchronous)
   local path = recovery_path(s)
   local data = recovery_data(s)
   local directory_path = root()
-  vim.fn.mkdir(directory_path, 'p', 448)
+  local made, mkdir_err = pcall(vim.fn.mkdir, directory_path, 'p', 448)
+  if not made then
+    notify('cannot preserve recovery file ' .. path .. ': ' .. tostring(mkdir_err))
+    return false
+  end
   if synchronous then
     if s.recovery_busy then s.recovery_next = data end
     local ok, err = pcall(function()
@@ -152,10 +156,21 @@ local function save_failed(s, err)
 end
 
 local function apply_saved(s)
+  if s.recovery_busy then
+    vim.defer_fn(function() apply_saved(s) end, 20)
+    return
+  end
+  local previous_pending = s.pending_apply
   s.pending_apply = s.pending_apply or {
     draft_id = s.draft.draft_id, revision = s.draft.revision, indent_size = config.indent_size,
   }
-  recover(s, true)
+  if not recover(s, true) then
+    s.pending_apply = previous_pending
+    s.busy = false
+    s.applying = false
+    modifiable(s, not s.pending_apply)
+    return
+  end
   s.busy = true
   request('apply', s.pending_apply, function(result, err)
     if not result then
@@ -207,11 +222,13 @@ pump = function(s)
     return
   end
   s.busy = true
+  local expected_revision = s.draft.revision + 1
   request('save', { draft_id = s.draft.draft_id, revision = s.draft.revision, text = snapshot }, function(saved, err)
     if not saved then
       recover(s, false)
       request('read', s.draft.cwd, function(current)
-        if current and current.draft_id == s.draft.draft_id and current.text == snapshot then
+        if current and current.draft_id == s.draft.draft_id and current.text == snapshot
+          and current.revision == expected_revision then
           s.busy = false
           s.draft = current
           pump(s)
@@ -238,13 +255,9 @@ end
 
 local function changed(s)
   text(s)
-  s.change = (s.change or 0) + 1
-  local change = s.change
-  vim.defer_fn(function()
-    if s.change == change and not s.applying then
-      if s.pending_apply then recover(s, false) else pump(s) end
-    end
-  end, 150)
+  if not s.applying then
+    if s.pending_apply then recover(s, false) else pump(s) end
+  end
 end
 
 local function flush(s, exiting)
@@ -274,7 +287,13 @@ end
 
 function M.open()
   if state and api.nvim_buf_is_loaded(state.buf) then
-    api.nvim_set_current_buf(state.buf)
+    local windows = vim.fn.win_findbuf(state.buf)
+    if #windows > 0 then
+      api.nvim_set_current_win(windows[1])
+      return state.buf
+    end
+    vim.cmd.split()
+    api.nvim_win_set_buf(0, state.buf)
     if state.cursor then pcall(api.nvim_win_set_cursor, 0, state.cursor) end
     return state.buf
   end
@@ -290,12 +309,18 @@ function M.open()
       local owner = tonumber(candidate:match('nvim%-recovery%-(%d+)%-'))
       if ok and type(value) == 'table' and type(value.draft) == 'table' and type(value.text) == 'string'
         and (not owner or owner == uv.os_getpid() or not uv.kill(owner, 0)) then
-        recovered, path = value, candidate
-        break
+        local claimed = recovery_path({})
+        if uv.fs_rename(candidate, claimed) then
+          recovered, path = value, claimed
+          break
+        end
       end
     end
     if recovered and not recovered.pending_apply and recovered.draft.draft_id == draft.draft_id
-      and recovered.text == draft.text then recovered.draft = draft end
+      and recovered.text == draft.text
+      and draft.revision == recovered.draft.revision + (recovered.text == recovered.draft.text and 0 or 1) then
+      recovered.draft = draft
+    end
     local buf = api.nvim_create_buf(true, false)
     state = { buf = buf, draft = recovered and recovered.draft or draft,
       text = recovered and recovered.text or draft.text, recovery = path,
@@ -324,8 +349,10 @@ function M.open()
     end })
     api.nvim_create_autocmd({ 'BufUnload', 'BufDelete' }, { buffer = buf, callback = function() flush(s, true) end })
     api.nvim_create_autocmd('VimLeavePre', { once = true, callback = function() flush(s, true) end })
-    api.nvim_set_current_buf(buf)
-    vim.notify('Now draft · ' .. s.draft.cwd .. (path and (' · recovered ' .. path) or ''), vim.log.levels.INFO)
+    vim.cmd.split()
+    api.nvim_win_set_buf(0, buf)
+    if not s.pending_apply then vim.cmd.startinsert() end
+    if path then vim.notify("Now: recovered draft", vim.log.levels.INFO) end
   end)
 end
 
