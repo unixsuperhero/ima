@@ -128,6 +128,12 @@ class Run:
     exit: int | None = None
     duration_ms: int | None = None
     tail: str = ""
+    agent_command: str | None = None
+    agent_session: str | None = None
+    agent_window: str | None = None
+    agent_server: str | None = None
+    agent_state: str | None = None
+    prompt_status: str | None = None
 
 
 class Store:
@@ -268,7 +274,8 @@ class Store:
         for m in self.motivations():
             rows.append(("later", m.id, f"{'locked ' + m.unlock_at[:10] if m.locked() else 'open'} · {m.title}"))
         for r in reversed(self.runs()):
-            status = "running" if r.exit is None else f"exit {r.exit}"
+            status = (r.agent_state or "unknown") if r.kind == "agent" else (
+                "running" if r.exit is None else f"exit {r.exit}")
             rows.append(("run", r.id, f"{r.kind} {status} · {r.text[:100]} · {tasks[r.task].title if r.task in tasks else ''}"))
         for t in sorted(tasks.values(), key=lambda t: t.done_at or "", reverse=True):
             if t.state == "done":
@@ -297,14 +304,59 @@ class Store:
         return sorted((m for m in items.values() if m.state == "open"), key=lambda m: (m.unlock_at, m.created_at))
 
     def runs(self, task_id: str | None = None) -> list[Run]:
+        return [r for r in self._runs(self.events()).values() if task_id is None or r.task == task_id]
+
+    @staticmethod
+    def _runs(events: list[dict]) -> dict[str, Run]:
         runs: dict[str, Run] = {}
-        for e in self.events():
+        for e in events:
             if e["type"] == "run.start":
                 runs[e["id"]] = Run(e["id"], e["task"], e["kind"], e["text"], e["cwd"], e["at"])
             elif e["type"] == "run.finish" and e["id"] in runs:
                 r = runs[e["id"]]
                 r.exit, r.duration_ms, r.tail = e["exit"], e["duration_ms"], e.get("tail", "")
-        return [r for r in runs.values() if task_id is None or r.task == task_id]
+            elif e["type"] == "run.agent" and e["id"] in runs:
+                for field in ("agent_command", "agent_session", "agent_window", "agent_server",
+                              "agent_state", "prompt_status"):
+                    if field in e:
+                        setattr(runs[e["id"]], field, e[field])
+        return runs
+
+    def agent_update(self, run_id: str, **fields) -> bool:
+        """Commit an agent transition and its attention item under one store lock."""
+        allowed = {"agent_command", "agent_session", "agent_window", "agent_server",
+                   "agent_state", "prompt_status"}
+        if fields.keys() - allowed:
+            raise ValueError("Unknown agent fields")
+        with self.locked():
+            events = self._events_unlocked()
+            run = self._runs(events).get(run_id)
+            if run is None or run.kind != "agent":
+                raise ValueError(f"Not a persistent agent run: {run_id}")
+            if run.agent_state == "stopped":
+                return False
+            changed = {k: v for k, v in fields.items() if getattr(run, k) != v}
+            if not changed:
+                return False
+            transitions = [e for e in events if e["type"] == "run.agent" and e["id"] == run_id
+                           and e.get("agent_state") not in (None, "unknown")]
+            previous = transitions[-1].get("agent_state") if transitions else None
+            state = changed.get("agent_state")
+            attention = state in {"done", "needs_input", "errored"} and state != previous
+            at = now_iso()
+            events.append({"type": "run.agent", "id": run_id, "at": at, **changed})
+            if attention:
+                window = fields.get("agent_window", run.agent_window)
+                session = fields.get("agent_session", run.agent_session)
+                server = fields.get("agent_server", run.agent_server)
+                events.append({"type": "noise.add", "id": secrets.token_hex(4), "at": at,
+                               "key": f"agent:{run_id}:{len(transitions) + 1}:{state}",
+                               "source": f"agent.{state}", "task": run.task,
+                               "ref": f"run:{run_id} tuios:{server or 'default'}:{session}:{window}",
+                               "body": f"Agent {state}: {run.text}"})
+            atomic_write(self.events_path, "".join(json.dumps(e, ensure_ascii=False) + "\n"
+                                                 for e in events))
+            return attention
 
     def open_noise(self) -> list[Noise]:
         return sorted((n for n in self.noise().values() if n.state == "open"),

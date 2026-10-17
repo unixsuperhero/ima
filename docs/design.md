@@ -15,7 +15,7 @@ Everything is a typed item with metadata. Collections are filters over items.
 
 ```js
 task       = { id, type:'task', meta:{ title, kind:'do'|'know', state:'open'|'active'|'done', parent, from: noiseId, cwd } }
-run        = { id, type:'run',  meta:{ task, kind:'command'|'prompt', text, cwd, exit, duration_ms, tail } }
+run        = { id, type:'run', meta:{ task, kind:'command'|'prompt'|'learn'|'agent', text, cwd, exit, duration_ms, tail } }
 noise      = { id, type:'noise', meta:{ body, source, ref, at, task } }
 know       = { id, type:'know', meta:{ question, answer, state } }
 motivation = { id, type:'motivation', meta:{ title, why, unlock_at, run, state:'open'|'done', task } }
@@ -25,6 +25,9 @@ action     = { id, type:'action', meta:{ verb, taskId, at } }
 Today `task`, `noise`, `run`, and `motivation` exist, stored as an append-only event log in
 `events.jsonl`. State is derived by replaying the log. See `now/store.py`.
 A task made by `extract` carries `from: noiseId`; the noise carries `task: taskId`.
+Persistent agent runs additionally record `agent_command`, `agent_session`,
+`agent_window`, `agent_server`, `agent_state`, and `prompt_status` through
+`run.agent` events. Pane ownership belongs to tuios, not the TUI worker.
 
 Pending task-entry text lives separately in `draft.json` as
 `{draft_id, revision, text, cwd}`. It survives restarts but is not yet a task
@@ -54,10 +57,13 @@ source = 'cli' | 'clipboard' | 'pane'
        | 'github.ci_status' | 'github.pr_status'
 ```
 
-`agent.response` is the one source that arrives already linked to a task: an
-`:ask` whose reply lands after you moved on. Shell runs and prompts are the
-first two infinitives the app gates: run and ask. Both are impossible without
-an active task because the command line only exists on the Now screen.
+An `:ask` reply that lands after you move on produces task-linked
+`agent.response` noise. App-launched persistent panes also keep their original
+task on `agent.done`, `agent.needs_input`, and `agent.errored` transitions.
+Status refresh and the live watcher share an atomic transition update so they
+cannot duplicate the same attention event. A later working-to-done turn can
+produce new attention. Unowned panes still produce generic, unlinked noise.
+Shell runs, prompts, and persistent agents start from the Now task screen.
 
 Extraction is itself a task ("triage noise") so clearing the inbox is a checkmark.
 
@@ -76,11 +82,24 @@ so editors and shells outside the TUI count as working.
 
 ## Terminal, agents, and the app
 
-Panes and windows are where work physically happens; a pane id is only ever a
-`ref`. The active task is global to the person. Every run started from the app
-carries `NOW_TASK` and `NOW_RUN` in its environment so child processes and hooks
-can attribute their own events. Projects are not a type: a task's `cwd` (its
-repo) is the grouping that exists in practice, and a parent task groups subtasks.
+The active task is global to the person. Runs retain the task that started them,
+not whichever task is current when they finish. Every app-launched agent carries
+`NOW_HOME`, `NOW_TASK`, and `NOW_RUN` in its environment. Projects are not a type:
+a task's `cwd` groups work by repository, and parent tasks group subtasks.
+
+`a` opens a task-scoped launcher; `g` opens the agent list. The launcher snapshots
+task and cwd, then starts the native `tuios start-agent` CLI detached. A durable
+run and unique pane name are recorded before spawning, so reopening Now can
+reconcile startup even if the original TUI exits first. There is no custom
+background supervisor and no automatic prompt resubmission.
+
+Agent detail refreshes only changed state/output without moving selection,
+focus, or scroll. `o` focuses the recorded native pane; `x` confirms stopping it.
+Authentication and approvals stay in the agent's own UI. Native turn states are
+not exit codes: done/idle panes can accept further prompts. An unreachable
+session is unknown; an authoritatively missing pane is closed. Output is a
+bounded pane-tail snapshot saved to the run log, not a continuous transcript
+archive. The old `:ask` path remains one-shot and is not restart-safe.
 
 ## The selector
 
@@ -88,7 +107,8 @@ repo) is the grouping that exists in practice, and a parent task groups subtasks
 noise, motivations, runs, done tasks, in that order. It is the only place where
 levels mix, and only as a list of typed rows. Enter acts by type and returns you
 to a single level: a task goes to Now, noise opens the extract prompt, an unlocked
-motivation is promoted, a run opens its log, a done task opens Review.
+motivation is promoted, a command/prompt run opens its log, an agent run opens
+agent detail, and a done task opens Review.
 
 ## Later, strictly
 

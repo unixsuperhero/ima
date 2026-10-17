@@ -12,6 +12,7 @@ import os
 import shlex
 import subprocess
 
+from . import agents
 from .notify import notify
 from .store import Store
 
@@ -33,12 +34,23 @@ def handle(store: Store, event: dict, own_window: str | None = None) -> str | No
     if kind in ACTIVITY:
         store.touch()
         return "touch"
-    if kind == "agent-state" and event.get("state") in ATTENTION:
+    if kind == "agent-state":
         window = event.get("window") or "?"
         if window == own_window:
             return None
-        state = event["state"]
+        state = event.get("state")
+        if not isinstance(state, str):
+            return None
+        owned = agents.observe(store, event.get("session", ""), window, state,
+                               server=os.environ.get("TUIOS_SERVER") or None)
         message = event.get("message") or ""
+        if owned is not None:
+            if owned:
+                notify(f"now: agent {state}", message or window[:8])
+                return "noise"
+            return None
+        if state not in ATTENTION:
+            return None
         body = f"agent {state} in pane {window[:8]}" + (f": {message}" if message else "")
         if store.capture(body, source=f"agent.{state}", ref=f"tuios://{event.get('session', '')}/{window}",
                          key=f"tuios:{window}:{event.get('seq')}"):
