@@ -213,3 +213,58 @@ class SelectorReviewTest(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("escape")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, Picker)
+
+
+class ListNavigationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_filter_navigation_keeps_input_and_selects_highlight(self):
+        for find in (False, True):
+            with self.subTest(find=find), tempfile.TemporaryDirectory() as tmp:
+                store = Store(Path(tmp))
+                store.add("work first")
+                store.add("work second")
+                store.add("unrelated")
+                app = NowApp(store)
+                async with app.run_test(size=(100, 30)) as pilot:
+                    if find:
+                        await pilot.press("ctrl+f")
+                    await pilot.press(*"work")
+                    await pilot.pause()
+                    field = app.focused
+                    rows = app.screen.query_one(ListView)
+                    await pilot.press("ctrl+p")
+                    self.assertEqual(rows.index, 0)
+                    await pilot.press("ctrl+n", "ctrl+n")
+                    self.assertEqual(rows.index, 1)
+                    await pilot.press("ctrl+p")
+                    self.assertEqual(rows.index, 0)
+                    await pilot.press("ctrl+n")
+                    self.assertIs(app.focused, field)
+                    self.assertEqual(field.value, "work")
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertEqual(store.active().title, "work second")
+
+    async def test_modal_navigation_does_not_move_underlying_list(self):
+        from now.app import TextPrompt
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            store.capture("first noise", source="cli")
+            store.capture("second noise", source="cli")
+            app = NowApp(store)
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.press("escape", "n", "ctrl+n")
+                await pilot.pause()
+                rows = app.screen.query_one(ListView)
+                self.assertEqual(rows.index, 1)
+                await pilot.press("e")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, TextPrompt)
+                field = app.focused
+                title = field.value
+                await pilot.press("ctrl+p", "ctrl+n", "ctrl+p")
+                self.assertEqual(rows.index, 1)
+                self.assertIs(app.focused, field)
+                self.assertEqual(field.value, title)
+                await pilot.press("enter")
+                await pilot.pause()
+                self.assertEqual([t.title for t in store.pickable()], ["second noise"])

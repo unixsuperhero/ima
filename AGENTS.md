@@ -11,3 +11,13 @@
 - Preserve unrelated changes. Exercise changed behavior, update affected docs,
   and commit completed changes. Commit often. Do not create Git worktrees.
 - Add task-specific context through short links, not full copies of shared notes.
+
+## Keyboard navigation
+
+- Every option list must support `Ctrl+n` for next/down and `Ctrl+p` for
+  previous/up, alongside its existing navigation keys. This includes lists
+  controlled by a focused filter or search input. Keep that input focused and
+  unchanged while navigating; Enter acts on the highlighted option.
+- Scope navigation to the current screen or modal. Do not intercept these keys
+  in unrelated text inputs or move a list behind an open modal.
+- When adding or changing a list, verify both shortcuts and selection behavior.

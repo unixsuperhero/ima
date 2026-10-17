@@ -83,7 +83,7 @@ single letters in normal mode. Every key anywhere counts as activity.
 
 | Screen | Key | Does |
 | --- | --- | --- |
-| Picker | type + Enter | activate the top match, or create the typed task; a leading `?` makes a to-know task |
+| Picker | type + Enter | activate the highlighted match, or create the typed task if there are no matches; a leading `?` makes a to-know task |
 | Picker | Esc / i / `/` | normal mode (j k Enter on the list) / back to the filter |
 | Picker | r, ctrl+r | activate a random pickable task |
 | Picker | n | noise screen |
@@ -103,7 +103,9 @@ single letters in normal mode. Every key anywhere counts as activity.
 | Later | p, Enter | promote an unlocked motivation to a task; locked rows refuse |
 | Later | x | dismiss |
 | Review | j k, Esc | move, back; read only |
+| Any option list | ctrl+n / ctrl+p | next/down / previous/up, including while typing in a filter or search |
 | any | ctrl+f | find: tasks, noise, later, runs, done. Enter acts by type |
+| any | ctrl+shift+p | open the command palette; ctrl+n / ctrl+p navigate its options |
 | any | ctrl+q | quit |
 
 Find acts on what you pick: a task is activated, noise opens the extract prompt, an

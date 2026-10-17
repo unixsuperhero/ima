@@ -15,6 +15,7 @@ import time
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.command import CommandPalette
 from textual.containers import Vertical
 from textual.theme import Theme
 from textual.screen import ModalScreen, Screen
@@ -27,10 +28,21 @@ from .store import Noise as NoiseItem
 from .store import Motivation, Store, Task, local_time
 
 
+class NavigationCommandPalette(CommandPalette):
+    BINDINGS = [
+        Binding("ctrl+n", "cursor_down", "Down", show=False),
+        Binding("ctrl+p", "command_list('cursor_up')", "Up", show=False),
+    ]
+
+
 class ListScreen(Screen):
-    """Shared j/k list movement for normal mode."""
+    """Shared list movement, including while a filter input has focus."""
 
     LIST_ID = "rows"
+    BINDINGS = [
+        Binding("ctrl+n", "cursor_down", "Down", show=False),
+        Binding("ctrl+p", "cursor_up", "Up", show=False),
+    ]
 
     def action_cursor_down(self) -> None:
         self.query_one(f"#{self.LIST_ID}", ListView).action_cursor_down()
@@ -40,7 +52,7 @@ class ListScreen(Screen):
 
 
 class Picker(ListScreen):
-    """Insert mode: type to filter, Enter activates the top match or creates the typed task.
+    """Insert mode: type to filter, Enter activates the highlighted match or creates the typed task.
     Esc enters normal mode: j/k move, Enter picks, i or / back to the filter."""
 
     BINDINGS = [
@@ -77,6 +89,7 @@ class Picker(ListScreen):
             crumb = f"{tasks[t.parent].title} › " if t.parent and t.parent in tasks else ""
             kind = "? " if t.kind == "know" else ""
             lv.append(ListItem(Label(f"{kind}{crumb}{t.title}")))
+        lv.index = 0 if self.rows else None
         self.query_one("#count", Static).update(
             f"{len(self.rows)} pickable · {self.store.done_today()} done today"
             f" · {len(self.store.open_noise())} noise · {len(self.store.motivations())} later"
@@ -91,7 +104,8 @@ class Picker(ListScreen):
     def filter_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         if self.rows:
-            self.pick(self.rows[0])
+            index = self.query_one("#rows", ListView).index
+            self.pick(self.rows[index if index is not None else 0])
         elif text:
             kind = "know" if text.startswith("?") else "do"
             self.pick(self.store.add(text.lstrip("? ").strip(), kind=kind))
@@ -327,7 +341,11 @@ class Review(ListScreen):
 class Selector(ModalScreen[tuple[str, str] | None]):
     """One search box over every collection. Enter picks the highlighted row, Esc cancels."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("down,ctrl+n", "cursor_down", "Down", show=False),
+        Binding("up,ctrl+p", "cursor_up", "Up", show=False),
+    ]
 
     def __init__(self, store: Store):
         super().__init__()
@@ -367,10 +385,10 @@ class Selector(ModalScreen[tuple[str, str] | None]):
     def selected(self, event: ListView.Selected) -> None:
         self.choose(event.list_view.index)
 
-    def key_down(self) -> None:
+    def action_cursor_down(self) -> None:
         self.query_one("#matches", ListView).action_cursor_down()
 
-    def key_up(self) -> None:
+    def action_cursor_up(self) -> None:
         self.query_one("#matches", ListView).action_cursor_up()
 
     def choose(self, index: int | None) -> None:
@@ -584,6 +602,7 @@ class Now(Screen):
 
 
 class NowApp(App):
+    COMMAND_PALETTE_BINDING = "ctrl+shift+p"
     CSS = """
     #title { padding: 2 4; text-style: bold; content-align: center middle; height: 7; color: $primary; border: heavy $primary; margin: 0 4; }
     #clock { padding: 0 4; color: $text-muted; }
@@ -608,6 +627,10 @@ class NowApp(App):
 
     def on_key(self) -> None:
         self.store.touch()
+
+    def action_command_palette(self) -> None:
+        if self.use_command_palette and not CommandPalette.is_open(self):
+            self.push_screen(NavigationCommandPalette(id="--command-palette"))
 
     def action_find(self) -> None:
         if isinstance(self.screen, Selector):
